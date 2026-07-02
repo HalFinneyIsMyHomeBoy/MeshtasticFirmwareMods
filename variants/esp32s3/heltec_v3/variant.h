@@ -42,3 +42,8 @@
 #define SX126X_DIO3_TCXO_VOLTAGE 1.8
 
 #define HAS_32768HZ 1
+
+// Pulse GPIO_TRIGGER_PIN when a direct message exactly matches GPIO_TRIGGER_MESSAGE.
+#define GPIO_TRIGGER_PIN 7
+#define GPIO_TRIGGER_MESSAGE "Open_Seseme"
+#define GPIO_TRIGGER_MS 10000
