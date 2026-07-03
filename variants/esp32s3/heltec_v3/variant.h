@@ -47,3 +47,10 @@
 #define GPIO_TRIGGER_PIN 7
 #define GPIO_TRIGGER_MESSAGE "Open_Seseme"
 #define GPIO_TRIGGER_MS 10000
+
+// Read VOLTAGE_ADC_PIN and DM the result when a direct message matches VOLTAGE_QUERY_MESSAGE.
+#define VOLTAGE_QUERY_MESSAGE "Get_Reading"
+#define VOLTAGE_ADC_PIN 6 // Heltec V3 J3 pin 17; 0-3.3V at the pin (use a divider for higher voltages)
+#define VOLTAGE_ADC_CHANNEL ADC_CHANNEL_5
+#define VOLTAGE_ADC_ATTENUATION ADC_ATTEN_DB_12
+#define VOLTAGE_ADC_MULTIPLIER 1.0f

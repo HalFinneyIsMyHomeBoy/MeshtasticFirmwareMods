@@ -697,6 +697,74 @@ class AnalogBatteryLevel : public HasBatteryLevel
 #endif
 };
 
+#if defined(ARCH_ESP32) && defined(BATTERY_PIN)
+bool esp32ReadAdc1ChannelMillivolts(adc_channel_t channel, adc_atten_t atten, int *millivoltsOut)
+{
+    if (!adc_handle || !millivoltsOut)
+        return false;
+
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = atten,
+        .bitwidth = adc_width,
+    };
+
+    esp_err_t err = adc_oneshot_config_channel(adc_handle, channel, &chan_cfg);
+    if (err != ESP_OK) {
+        LOG_ERROR("ADC channel config failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    int raw = 0;
+    uint32_t sum = 0;
+    uint8_t count = 0;
+    for (int i = 0; i < 8; i++) {
+        err = adc_oneshot_read(adc_handle, channel, &raw);
+        if (err == ESP_OK) {
+            sum += raw;
+            count++;
+        }
+    }
+    if (count == 0)
+        return false;
+
+    raw = sum / count;
+
+    int mv = 0;
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+    adc_cali_handle_t cali = nullptr;
+    adc_cali_curve_fitting_config_t cali_config = {
+        .unit_id = unit,
+        .atten = atten,
+        .bitwidth = adc_width,
+    };
+    if (adc_cali_create_scheme_curve_fitting(&cali_config, &cali) == ESP_OK) {
+        adc_cali_raw_to_voltage(cali, raw, &mv);
+        adc_cali_delete_scheme_curve_fitting(cali);
+    }
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    adc_cali_handle_t cali = nullptr;
+    adc_cali_line_fitting_config_t cali_config = {
+        .unit_id = unit,
+        .atten = atten,
+        .bitwidth = adc_width,
+        .default_vref = DEFAULT_VREF,
+    };
+    if (adc_cali_create_scheme_line_fitting(&cali_config, &cali) == ESP_OK) {
+        adc_cali_raw_to_voltage(cali, raw, &mv);
+        adc_cali_delete_scheme_line_fitting(cali);
+    }
+#endif
+
+    if (mv == 0) {
+        const int bits = adcBitWidthToBits(adc_width);
+        mv = (int)((raw / (powf(2.0f, bits) - 1.0f)) * 3300);
+    }
+
+    *millivoltsOut = mv;
+    return true;
+}
+#endif
+
 static AnalogBatteryLevel analogLevel;
 
 Power::Power() : OSThread("Power")
