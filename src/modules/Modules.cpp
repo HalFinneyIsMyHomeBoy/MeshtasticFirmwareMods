@@ -49,8 +49,7 @@
 #endif
 #include "modules/TextMessageModule.h"
 #ifdef HELTEC_V3
-#include "platform/extra_variants/heltec_v3/GpioTriggerModule.h"
-#include "platform/extra_variants/heltec_v3/VoltageQueryModule.h"
+#include "platform/extra_variants/heltec_v3/DmTriggerModule.h"
 #endif
 #if !MESHTASTIC_EXCLUDE_TRACEROUTE
 #include "modules/TraceRouteModule.h"
@@ -164,8 +163,7 @@ void setupModules()
     textMessageModule = new TextMessageModule();
 #endif
 #ifdef HELTEC_V3
-    new GpioTriggerModule();
-    new VoltageQueryModule();
+    new DmTriggerModule();
 #endif
 #if !MESHTASTIC_EXCLUDE_TRACEROUTE
     traceRouteModule = new TraceRouteModule();
