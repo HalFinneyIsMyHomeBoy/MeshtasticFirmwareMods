@@ -1,14 +1,18 @@
 #ifdef HELTEC_V3
 
 #include "platform/extra_variants/heltec_v3/DmTriggerModule.h"
+#include "Channels.h"
 #include "FSCommon.h"
 #include "MeshService.h"
 #include "NodeDB.h"
+#include "SPILock.h"
 #include "SafeFile.h"
+#include "concurrency/LockGuard.h"
 #include "configuration.h"
 #include "main.h"
 #include "power.h"
 #include <Arduino.h>
+#include <ctype.h>
 #include <string.h>
 
 #ifdef ARCH_ESP32
@@ -109,9 +113,18 @@ static char *trimToken(char *token)
 
 DmTriggerModule::DmTriggerModule() : SinglePortModule("DmTrigger", meshtastic_PortNum_TEXT_MESSAGE_APP), OSThread("DmTrigger")
 {
-    loadFromDisk();
-    if (triggerCount == 0)
+    bool hadFile = false;
+    bool loadedOk = loadFromDisk(hadFile);
+    if (triggerCount == 0 && !hadFile) {
         installDefaultTriggers();
+    } else if (triggerCount == 0 && hadFile && !loadedOk) {
+        LOG_ERROR("DmTrigger: prefs file present but invalid — not installing defaults (avoids clobbering)");
+    }
+    LOG_INFO("DmTrigger: loaded %u trigger(s)", triggerCount);
+    for (uint8_t i = 0; i < triggerCount; i++) {
+        LOG_INFO("DmTrigger: [%u] enabled=%u type=%u gpio=%u msg='%s'", i, triggers[i].enabled, (unsigned)triggers[i].type,
+                 triggers[i].gpio, triggers[i].message);
+    }
     setIntervalFromNow(50);
 }
 
@@ -204,16 +217,30 @@ void DmTriggerModule::installDefaultTriggers()
 
 void DmTriggerModule::loadFromDisk()
 {
-#ifdef FSCom
-    PersistedState state{};
-    auto file = FSCom.open(kStateFile, FILE_O_READ);
-    if (!file)
-        return;
+    bool unused = false;
+    (void)loadFromDisk(unused);
+}
 
-    const bool readOk = file.read(reinterpret_cast<uint8_t *>(&state), sizeof(state)) == sizeof(state);
+bool DmTriggerModule::loadFromDisk(bool &hadFile)
+{
+    hadFile = false;
+#ifdef FSCom
+    concurrency::LockGuard g(spiLock);
+    auto file = FSCom.open(kStateFile, FILE_O_READ);
+    if (!file) {
+        LOG_INFO("DmTrigger: no prefs at %s", kStateFile);
+        return false;
+    }
+    hadFile = true;
+
+    PersistedState state{};
+    const size_t got = file.read(reinterpret_cast<uint8_t *>(&state), sizeof(state));
     file.close();
-    if (!readOk || state.magic != kStateMagic || state.version != kStateVersion || state.count > kMaxTriggers)
-        return;
+    if (got != sizeof(state) || state.magic != kStateMagic || state.version != kStateVersion || state.count > kMaxTriggers) {
+        LOG_WARN("DmTrigger: invalid prefs (got=%u expect=%u magic=0x%08x ver=%u count=%u)", (unsigned)got,
+                 (unsigned)sizeof(state), state.magic, state.version, state.count);
+        return false;
+    }
 
     triggerCount = 0;
     memset(triggers, 0, sizeof(triggers));
@@ -230,6 +257,10 @@ void DmTriggerModule::loadFromDisk()
         copyStringField(dst.message, sizeof(dst.message), src.message);
         triggerCount++;
     }
+    LOG_INFO("DmTrigger: restored %u trigger(s) from disk", triggerCount);
+    return true;
+#else
+    return false;
 #endif
 }
 
@@ -254,10 +285,18 @@ bool DmTriggerModule::saveToDisk() const
         copyStringField(dst.message, sizeof(dst.message), src.message);
     }
 
-    FSCom.mkdir("/prefs");
+    {
+        concurrency::LockGuard g(spiLock);
+        FSCom.mkdir("/prefs");
+    }
     auto file = SafeFile(kStateFile, true);
     const size_t written = file.write(reinterpret_cast<const uint8_t *>(&state), sizeof(state));
-    return file.close() && written == sizeof(state);
+    const bool ok = file.close() && written == sizeof(state);
+    if (ok)
+        LOG_INFO("DmTrigger: saved %u trigger(s) to %s", triggerCount, kStateFile);
+    else
+        LOG_ERROR("DmTrigger: failed to save prefs (%u of %u bytes)", (unsigned)written, (unsigned)sizeof(state));
+    return ok;
 #else
     return false;
 #endif
@@ -297,10 +336,9 @@ void DmTriggerModule::sendDm(const meshtastic_MeshPacket &rx, const char *text)
         return;
 
     meshtastic_MeshPacket *p = allocDataPacket();
-    p->to = rx.from;
-    p->channel = rx.channel;
     p->want_ack = false;
     p->decoded.want_response = false;
+    p->decoded.request_id = rx.id;
 
     size_t len = strlen(text);
     if (len > sizeof(p->decoded.payload.bytes))
@@ -308,6 +346,40 @@ void DmTriggerModule::sendDm(const meshtastic_MeshPacket &rx, const char *text)
 
     p->decoded.payload.size = len;
     memcpy(p->decoded.payload.bytes, text, len);
+
+    // USB/phone config session — deliver locally without mesh encoding.
+    if (rx.from == 0) {
+        p->to = nodeDB->getNodeNum();
+        p->channel = rx.channel;
+        service->sendToPhone(p);
+        return;
+    }
+
+    const NodeNum dest = getFrom(&rx);
+    const bool wasBroadcast = isBroadcast(rx.to);
+    meshtastic_NodeInfoLite_public_key_t destKey{};
+    const bool haveKey = !wasBroadcast && nodeDB->copyPublicKey(dest, destKey);
+
+    if (haveKey) {
+        // Prefer a real PKI DM when we know the peer (required for modern firmware).
+        p->to = dest;
+        p->channel = 0;
+        p->pki_encrypted = true;
+        memcpy(p->public_key.bytes, destKey.bytes, 32);
+        p->public_key.size = 32;
+        LOG_INFO("DmTrigger: sending PKI reply to 0x%08x", dest);
+        service->sendToMesh(p);
+        return;
+    }
+
+    // No pubkey (or request was a channel message): reply on the channel so the reading still arrives.
+    // Legacy channel DMs are rejected by Router; broadcast is the reliable fallback.
+    p->to = NODENUM_BROADCAST;
+    p->pki_encrypted = false;
+    p->channel = wasBroadcast ? rx.channel : channels.getPrimaryIndex();
+    if (rx.pki_encrypted)
+        p->channel = channels.getPrimaryIndex();
+    LOG_WARN("DmTrigger: no PKI path to 0x%08x — channel reply on ch=%u", dest, p->channel);
     service->sendToMesh(p);
 }
 
@@ -354,10 +426,14 @@ bool DmTriggerModule::handleConfigCommand(const meshtastic_MeshPacket &mp, const
 {
     if (!text || strncmp(text, kConfigPrefix, sizeof(kConfigPrefix) - 1) != 0)
         return false;
-    if (!isAuthorizedConfigSender(mp))
+    if (!isAuthorizedConfigSender(mp)) {
+        LOG_WARN("DmTrigger: rejecting config from unauthorized 0x%08x", mp.from);
+        sendConfigReply(mp, "Not authorized");
         return true;
+    }
 
     const char *cmd = text + sizeof(kConfigPrefix) - 1;
+    LOG_INFO("DmTrigger: config cmd='%s' from=0x%08x count=%u", cmd, mp.from, triggerCount);
     if (strncmp(cmd, "list", 4) == 0) {
         char reply[220];
         int offset = snprintf(reply, sizeof(reply), "Triggers (%u/%u)", triggerCount, kMaxTriggers);
@@ -398,6 +474,10 @@ bool DmTriggerModule::handleConfigCommand(const meshtastic_MeshPacket &mp, const
             sendConfigReply(mp, "Set failed: gpio not allowed");
             return true;
         }
+        if (index < 0 && triggerCount >= kMaxTriggers) {
+            sendConfigReply(mp, "Set failed: table full");
+            return true;
+        }
 
         bool ok = false;
         if (index < 0)
@@ -405,6 +485,8 @@ bool DmTriggerModule::handleConfigCommand(const meshtastic_MeshPacket &mp, const
         else
             ok = setTrigger((uint8_t)index, trigger);
 
+        LOG_INFO("DmTrigger: set index=%d msg='%s' gpio=%u ok=%u count=%u", index, trigger.message, trigger.gpio, ok,
+                 triggerCount);
         sendConfigReply(mp, ok ? "Trigger saved" : "Set failed");
         return true;
     }
@@ -485,7 +567,15 @@ void DmTriggerModule::handleTriggerAction(const meshtastic_MeshPacket &mp, const
 
 ProcessMessage DmTriggerModule::handleReceived(const meshtastic_MeshPacket &mp)
 {
-    if (isBroadcast(mp.to))
+    // Accept DMs to us, and also channel broadcasts (many clients send channel text, not PKI DMs).
+    // Modern firmware rejects legacy/channel-encrypted DMs before modules see them.
+    const bool directed = isToUs(&mp) && !isBroadcast(mp.to);
+    const bool channelText = isBroadcast(mp.to);
+    if (!directed && !channelText)
+        return ProcessMessage::CONTINUE;
+
+    // Ignore our own channel transmissions (avoids feedback on replies).
+    if (channelText && isFromUs(&mp) && mp.from != 0)
         return ProcessMessage::CONTINUE;
 
     auto &payload = mp.decoded;
@@ -499,15 +589,28 @@ ProcessMessage DmTriggerModule::handleReceived(const meshtastic_MeshPacket &mp)
     memcpy(text, payload.payload.bytes, len);
     text[len] = '\0';
 
+    // Trim trailing CR/LF/spaces that some clients append to text messages.
+    while (len > 0 && (text[len - 1] == '\n' || text[len - 1] == '\r' || text[len - 1] == ' '))
+        text[--len] = '\0';
+    // Trim leading spaces/tabs.
+    size_t start = 0;
+    while (start < len && (text[start] == ' ' || text[start] == '\t'))
+        start++;
+    if (start > 0) {
+        memmove(text, text + start, len - start + 1);
+        len -= start;
+    }
+
     if (strncmp(text, kConfigPrefix, sizeof(kConfigPrefix) - 1) == 0) {
-        if (!isToUs(&mp))
+        // Config is USB/admin only — never honor !dmtrigger: from the open channel.
+        if (!directed)
             return ProcessMessage::CONTINUE;
         handleConfigCommand(mp, text);
         return ProcessMessage::CONTINUE;
     }
 
-    if (isFromUs(&mp) || !isToUs(&mp))
-        return ProcessMessage::CONTINUE;
+    LOG_INFO("DmTrigger: %s from=0x%08x text='%s' (len=%u) checking %u trigger(s)", directed ? "DM" : "CH", mp.from, text,
+             (unsigned)len, triggerCount);
 
     for (uint8_t i = 0; i < triggerCount; i++) {
         const Trigger &trigger = triggers[i];
@@ -515,12 +618,19 @@ ProcessMessage DmTriggerModule::handleReceived(const meshtastic_MeshPacket &mp)
             continue;
 
         const size_t queryLen = strlen(trigger.message);
-        if (payload.payload.size != queryLen || memcmp(payload.payload.bytes, trigger.message, queryLen) != 0)
+        if (len != queryLen || strncasecmp(text, trigger.message, queryLen) != 0)
             continue;
 
+        LOG_INFO("DmTrigger: matched '%s' type=%u gpio=%u from=0x%08x", trigger.message, (unsigned)trigger.type, trigger.gpio,
+                 mp.from);
         handleTriggerAction(mp, trigger);
-        break;
+        return ProcessMessage::CONTINUE;
     }
+
+    if (triggerCount == 0)
+        LOG_WARN("DmTrigger: no triggers configured — use !dmtrigger:set or the web UI (then List to verify)");
+    else if (directed)
+        LOG_INFO("DmTrigger: no match for '%s'", text);
 
     return ProcessMessage::CONTINUE;
 }

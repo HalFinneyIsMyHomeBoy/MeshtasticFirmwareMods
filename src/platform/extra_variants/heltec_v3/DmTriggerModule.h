@@ -51,6 +51,7 @@ class DmTriggerModule : public SinglePortModule, private concurrency::OSThread
     uint32_t lastAnalogReplyFrom[kMaxTriggers]{};
 
     void installDefaultTriggers();
+    bool loadFromDisk(bool &hadFile);
     void loadFromDisk();
     bool saveToDisk() const;
     bool isAuthorizedConfigSender(const meshtastic_MeshPacket &mp) const;

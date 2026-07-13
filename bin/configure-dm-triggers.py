@@ -26,7 +26,9 @@ def _connect(port: str | None):
         import meshtastic.serial_interface
     except ImportError as exc:  # pragma: no cover - runtime helper
         raise SystemExit(
-            "meshtastic package required: pip install meshtastic"
+            "meshtastic package required. Install into the repo venv:\n"
+            "  .venv/bin/pip install meshtastic pypubsub\n"
+            "Then run with: .venv/bin/python bin/configure-dm-triggers.py ..."
         ) from exc
 
     if port:
