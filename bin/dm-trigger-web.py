@@ -231,7 +231,7 @@ HTML = r"""<!doctype html>
       </div>
       <div class="hint">
         This uses the Meshtastic protobuf serial API (not a raw UART dump). Firmware <code>LOG_*</code> lines appear here when the API streams them.
-        Try: <code>!dmtrigger:list</code>, then from another radio send <code>read5</code> as a Direct Message <em>or</em> a channel message.
+        Try: <code>!dmtrigger:list</code>, then from another radio send <code>read5</code> as a <b>Direct Message</b> to this node (channel messages are ignored).
         Watch for <code>DmTrigger: matched</code> / <code>replying</code> here. Disconnect before writing firmware.
       </div>
     </section>

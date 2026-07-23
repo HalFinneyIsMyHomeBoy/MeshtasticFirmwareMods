@@ -1,7 +1,6 @@
 #ifdef HELTEC_V3
 
 #include "platform/extra_variants/heltec_v3/DmTriggerModule.h"
-#include "Channels.h"
 #include "FSCommon.h"
 #include "MeshService.h"
 #include "NodeDB.h"
@@ -355,31 +354,21 @@ void DmTriggerModule::sendDm(const meshtastic_MeshPacket &rx, const char *text)
         return;
     }
 
+    // Never reply on the open channel — only DM the original sender.
     const NodeNum dest = getFrom(&rx);
-    const bool wasBroadcast = isBroadcast(rx.to);
     meshtastic_NodeInfoLite_public_key_t destKey{};
-    const bool haveKey = !wasBroadcast && nodeDB->copyPublicKey(dest, destKey);
-
-    if (haveKey) {
-        // Prefer a real PKI DM when we know the peer (required for modern firmware).
-        p->to = dest;
-        p->channel = 0;
-        p->pki_encrypted = true;
-        memcpy(p->public_key.bytes, destKey.bytes, 32);
-        p->public_key.size = 32;
-        LOG_INFO("DmTrigger: sending PKI reply to 0x%08x", dest);
-        service->sendToMesh(p);
+    if (!nodeDB->copyPublicKey(dest, destKey)) {
+        LOG_WARN("DmTrigger: no public key for 0x%08x — cannot send DM reply", dest);
+        packetPool.release(p);
         return;
     }
 
-    // No pubkey (or request was a channel message): reply on the channel so the reading still arrives.
-    // Legacy channel DMs are rejected by Router; broadcast is the reliable fallback.
-    p->to = NODENUM_BROADCAST;
-    p->pki_encrypted = false;
-    p->channel = wasBroadcast ? rx.channel : channels.getPrimaryIndex();
-    if (rx.pki_encrypted)
-        p->channel = channels.getPrimaryIndex();
-    LOG_WARN("DmTrigger: no PKI path to 0x%08x — channel reply on ch=%u", dest, p->channel);
+    p->to = dest;
+    p->channel = 0;
+    p->pki_encrypted = true;
+    memcpy(p->public_key.bytes, destKey.bytes, 32);
+    p->public_key.size = 32;
+    LOG_INFO("DmTrigger: sending PKI reply to 0x%08x", dest);
     service->sendToMesh(p);
 }
 
@@ -567,15 +556,8 @@ void DmTriggerModule::handleTriggerAction(const meshtastic_MeshPacket &mp, const
 
 ProcessMessage DmTriggerModule::handleReceived(const meshtastic_MeshPacket &mp)
 {
-    // Accept DMs to us, and also channel broadcasts (many clients send channel text, not PKI DMs).
-    // Modern firmware rejects legacy/channel-encrypted DMs before modules see them.
-    const bool directed = isToUs(&mp) && !isBroadcast(mp.to);
-    const bool channelText = isBroadcast(mp.to);
-    if (!directed && !channelText)
-        return ProcessMessage::CONTINUE;
-
-    // Ignore our own channel transmissions (avoids feedback on replies).
-    if (channelText && isFromUs(&mp) && mp.from != 0)
+    // Direct messages only — ignore channel broadcasts so everyone else does not trigger us.
+    if (isBroadcast(mp.to) || !isToUs(&mp))
         return ProcessMessage::CONTINUE;
 
     auto &payload = mp.decoded;
@@ -602,15 +584,11 @@ ProcessMessage DmTriggerModule::handleReceived(const meshtastic_MeshPacket &mp)
     }
 
     if (strncmp(text, kConfigPrefix, sizeof(kConfigPrefix) - 1) == 0) {
-        // Config is USB/admin only — never honor !dmtrigger: from the open channel.
-        if (!directed)
-            return ProcessMessage::CONTINUE;
         handleConfigCommand(mp, text);
         return ProcessMessage::CONTINUE;
     }
 
-    LOG_INFO("DmTrigger: %s from=0x%08x text='%s' (len=%u) checking %u trigger(s)", directed ? "DM" : "CH", mp.from, text,
-             (unsigned)len, triggerCount);
+    LOG_INFO("DmTrigger: DM from=0x%08x text='%s' (len=%u) checking %u trigger(s)", mp.from, text, (unsigned)len, triggerCount);
 
     for (uint8_t i = 0; i < triggerCount; i++) {
         const Trigger &trigger = triggers[i];
@@ -629,7 +607,7 @@ ProcessMessage DmTriggerModule::handleReceived(const meshtastic_MeshPacket &mp)
 
     if (triggerCount == 0)
         LOG_WARN("DmTrigger: no triggers configured — use !dmtrigger:set or the web UI (then List to verify)");
-    else if (directed)
+    else
         LOG_INFO("DmTrigger: no match for '%s'", text);
 
     return ProcessMessage::CONTINUE;
