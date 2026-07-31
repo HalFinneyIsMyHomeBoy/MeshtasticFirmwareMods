@@ -52,208 +52,165 @@ HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Meshtastic DM Trigger Configurator</title>
+  <title>DM Triggers</title>
   <style>
-    :root { color-scheme: dark; --bg:#101418; --card:#181f26; --muted:#9aa8b5; --text:#eef4f8; --accent:#50c878; --danger:#ff6b6b; --line:#2a3540; }
-    body { margin:0; font:15px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--text); }
-    header { padding:20px 24px; border-bottom:1px solid var(--line); background:#0c1116; }
+    :root { color-scheme: dark; --bg:#0f1419; --card:#1a222b; --muted:#8b9aab; --text:#eef3f7; --accent:#3dbe7a; --danger:#e85d5d; --line:#2c3845; --blue:#3d7eff; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:15px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--text); }
+    .wrap { max-width:720px; margin:0 auto; padding:20px 16px 48px; }
     h1 { margin:0 0 4px; font-size:22px; }
-    .sub { color:var(--muted); }
-    main { display:grid; grid-template-columns: 380px 1fr; gap:18px; padding:18px; }
-    section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
-    h2 { margin:0 0 14px; font-size:17px; }
-    label { display:block; margin:12px 0 5px; color:var(--muted); font-size:13px; }
-    input, select, button { box-sizing:border-box; width:100%; border-radius:8px; border:1px solid var(--line); background:#0e141a; color:var(--text); padding:10px; font:inherit; }
-    button { cursor:pointer; background:#1d2a35; }
+    h2 { margin:0 0 12px; font-size:16px; }
+    .sub { color:var(--muted); margin-bottom:20px; }
+    section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+    label { display:block; margin:10px 0 4px; color:var(--muted); font-size:13px; }
+    label:first-child { margin-top:0; }
+    input, select, button { width:100%; border-radius:8px; border:1px solid var(--line); background:#0e141a; color:var(--text); padding:10px 12px; font:inherit; }
+    button { cursor:pointer; background:#24303c; }
     button.primary { background:var(--accent); color:#06230f; border-color:var(--accent); font-weight:700; }
-    button.danger { background:#3a1d22; color:#ffd4d4; border-color:#63313a; }
-    button.flash { background:#2a3340; color:#8b98a5; border-color:var(--line); font-weight:700; margin-top:14px; }
-    button.flash.enabled { background:#3d7eff; color:#fff; border-color:#3d7eff; }
-    button:disabled { opacity:.45; cursor:not-allowed; filter:grayscale(0.4); }
-    .row { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
-    .actions { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px; margin-top:14px; }
-    .pin-list { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:8px; }
-    .pin { text-align:left; border:1px solid var(--line); background:#101820; padding:10px; border-radius:9px; }
-    .pin.active { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
-    .pin small { display:block; color:var(--muted); margin-top:2px; }
-    .board { display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start; }
-    svg { width:100%; max-width:320px; background:#0e141a; border:1px solid var(--line); border-radius:12px; }
-    .log { white-space:pre-wrap; min-height:120px; max-height:320px; overflow:auto; background:#0e141a; border:1px solid var(--line); border-radius:10px; padding:12px; color:#c7d4df; }
-    .console-wrap { display:none; margin-top:18px; }
-    .console-wrap.visible { display:block; }
-    .console-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
-    .console-status { color:var(--muted); font-size:13px; }
-    .console-status.running { color:#e9b44c; }
-    .console-status.ok { color:var(--accent); }
-    .console-status.fail { color:var(--danger); }
-    #flashConsole { white-space:pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; line-height:1.4; min-height:220px; max-height:420px; overflow:auto; background:#070b0f; border:1px solid var(--line); border-radius:10px; padding:12px; color:#b7c7d4; }
+    button.danger { background:transparent; color:var(--danger); border-color:#5a3030; }
+    button.blue { background:var(--blue); color:#fff; border-color:var(--blue); font-weight:600; }
+    button:disabled { opacity:.4; cursor:not-allowed; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .row3 { display:grid; grid-template-columns:1fr auto auto; gap:8px; align-items:end; }
+    .btn-row { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+    .btn-row button { width:auto; min-width:100px; flex:1; }
+    .status { font-size:13px; color:var(--muted); margin-top:8px; }
+    .status.ok { color:var(--accent); }
+    .status.fail { color:var(--danger); }
+    .status.running { color:#e9b44c; }
     table { width:100%; border-collapse:collapse; }
-    th, td { border-bottom:1px solid var(--line); padding:8px; text-align:left; }
+    th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); font-size:14px; }
     th { color:var(--muted); font-weight:600; }
-    .pill { display:inline-block; padding:2px 7px; border-radius:999px; background:#24313c; color:#cbd7e1; font-size:12px; }
-    .hint { margin-top:8px; color:var(--muted); font-size:13px; }
-    .serial-monitor {
-      white-space: pre-wrap;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 12px;
-      line-height: 1.4;
-      min-height: 280px;
-      max-height: 480px;
-      overflow: auto;
-      background: #070b0f;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 12px;
-      color: #b7c7d4;
-    }
-    .send-row { display:grid; grid-template-columns: 1fr 120px; gap:10px; margin-top:10px; }
-    .send-row button { width:100%; }
-    .monitor-toolbar { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px; margin-bottom:10px; }
-    .full { grid-column: 1 / -1; }
-    @media (max-width: 900px) { main { grid-template-columns:1fr; } .board { grid-template-columns:1fr; } }
+    .pill { display:inline-block; padding:2px 7px; border-radius:999px; background:#24313c; font-size:12px; }
+    .empty { color:var(--muted); font-size:14px; }
+    .mono { white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; line-height:1.4; min-height:160px; max-height:320px; overflow:auto; background:#070b0f; border:1px solid var(--line); border-radius:8px; padding:10px; color:#b7c7d4; }
+    details { margin-top:8px; }
+    details summary { cursor:pointer; color:var(--muted); font-size:13px; padding:6px 0; }
+    .hint { color:var(--muted); font-size:13px; margin-top:8px; }
+    .send-row { display:grid; grid-template-columns:1fr 100px; gap:8px; margin-top:10px; }
+    td button { width:auto; padding:6px 10px; font-size:13px; }
+    @media (max-width:560px) { .row, .row3 { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
-  <header>
-    <h1>DM Trigger Configurator</h1>
-    <div class="sub">Configure Heltec V3 GPIO output and analog-reading triggers over USB. Use the device console to talk to the node and watch logs.</div>
-  </header>
-  <main>
-    <section>
-      <h2>Connection</h2>
-      <label for="port">Serial port</label>
-      <div class="row">
-        <select id="port"></select>
-        <button onclick="refreshPorts()">Refresh</button>
-      </div>
-      <div class="hint">The firmware must already include <code>DmTriggerModule</code>. Config commands are sent as self-DMs.</div>
-      <div id="deviceStatus" class="hint" style="margin-top:10px">Connect Device console to see this node's ID and channel.</div>
+  <div class="wrap">
+    <h1>DM Triggers</h1>
+    <p class="sub">Heltec V3 — save triggers to the device, then DM the message from another node.</p>
 
-      <h2 style="margin-top:24px">Trigger</h2>
-      <label for="index">Slot</label>
-      <select id="index">
-        <option value="-1">Append new trigger</option>
-        <option value="0">Replace slot 0</option>
-        <option value="1">Replace slot 1</option>
-        <option value="2">Replace slot 2</option>
-        <option value="3">Replace slot 3</option>
-        <option value="4">Replace slot 4</option>
-        <option value="5">Replace slot 5</option>
-        <option value="6">Replace slot 6</option>
-        <option value="7">Replace slot 7</option>
-      </select>
-      <label for="name">Trigger name</label>
-      <input id="name" maxlength="19" placeholder="Garage">
-      <label for="type">Type</label>
-      <select id="type" onchange="updateType()">
-        <option value="output">Output</option>
-        <option value="analog">Analog reading</option>
-      </select>
-      <label for="message">Exact direct message</label>
-      <input id="message" maxlength="39" placeholder="Open_Seseme">
+    <section>
+      <h2>1. Connect</h2>
+      <div class="row3">
+        <div>
+          <label for="port">USB port</label>
+          <select id="port"></select>
+        </div>
+        <button onclick="refreshPorts()" style="margin-top:22px">Refresh</button>
+        <button class="primary" id="connectBtn" onclick="toggleConnect()" style="margin-top:22px">Connect</button>
+      </div>
+      <div id="deviceStatus" class="status">Not connected</div>
+    </section>
+
+    <section>
+      <h2>2. Saved triggers</h2>
+      <table>
+        <thead><tr><th>Message</th><th>Type</th><th>Pin</th><th></th></tr></thead>
+        <tbody id="triggerRows"><tr><td colspan="4" class="empty">Connect, then click Refresh list.</td></tr></tbody>
+      </table>
+      <div class="btn-row">
+        <button onclick="listTriggers()">Refresh list</button>
+        <button class="danger" onclick="clearTriggers()">Clear all</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>3. Add / update trigger</h2>
+      <input type="hidden" id="index" value="-1">
+      <label for="message">Direct-message text (exact match)</label>
+      <input id="message" maxlength="39" placeholder="open7">
+      <label for="name">Label</label>
+      <input id="name" maxlength="19" placeholder="Relay 7">
       <div class="row">
         <div>
-          <label for="gpio">GPIO</label>
-          <input id="gpio" type="number" min="1" max="48" value="7">
+          <label for="type">Action</label>
+          <select id="type" onchange="updateType()">
+            <option value="output">Pulse GPIO (relay)</option>
+            <option value="analog">Read voltage (ADC)</option>
+          </select>
         </div>
-        <div id="durationBox">
-          <label for="duration">Duration (ms)</label>
+        <div>
+          <label for="gpio">GPIO pin</label>
+          <select id="gpio"></select>
+        </div>
+      </div>
+      <div class="row" id="durationBox">
+        <div>
+          <label for="duration">Hold time (ms)</label>
           <input id="duration" type="number" min="1" value="10000">
         </div>
+        <div></div>
       </div>
       <div id="analogBox" style="display:none">
         <label for="multiplier">ADC multiplier</label>
         <input id="multiplier" type="number" min="0" step="0.01" value="1.0">
       </div>
-      <button class="primary" style="margin-top:14px" onclick="saveTrigger()">Save Trigger</button>
-
-      <div class="actions">
-        <button onclick="listTriggers()">List</button>
-        <button onclick="deleteTrigger()">Delete Slot</button>
-        <button class="danger" onclick="clearTriggers()">Clear All</button>
+      <div class="btn-row">
+        <button class="primary" onclick="saveTrigger()">Save to device</button>
+        <button onclick="resetForm()">New trigger</button>
       </div>
-      <button id="writeFirmware" class="flash" disabled title="Optional: flash latest heltec-v3 firmware code" onclick="writeFirmware()">Write firmware</button>
-      <div class="hint">Triggers save immediately to device prefs (<code>/prefs/dm_triggers.bin</code>) — they are <b>not</b> compiled into the binary. Use Write firmware only when you need a new firmware build on the board.</div>
+      <p class="hint">Saves to device storage immediately. No firmware flash needed for trigger changes.</p>
     </section>
 
-    <div>
-      <section>
-        <h2>Heltec V3 Pinout</h2>
-        <div class="board">
-          <svg viewBox="0 0 260 360" role="img" aria-label="Simplified Heltec V3 pinout">
-            <rect x="80" y="20" width="100" height="320" rx="16" fill="#1c2833" stroke="#40515e"/>
-            <rect x="98" y="42" width="64" height="36" rx="4" fill="#0b1014" stroke="#607080"/>
-            <text x="130" y="65" text-anchor="middle" fill="#9fb2c2" font-size="11">OLED</text>
-            <rect x="100" y="230" width="60" height="70" rx="8" fill="#263747" stroke="#607080"/>
-            <text x="130" y="270" text-anchor="middle" fill="#9fb2c2" font-size="11">LoRa</text>
-            <g id="pinDots"></g>
-          </svg>
-          <div class="pin-list" id="pinList"></div>
-        </div>
-        <div class="hint">Reserved board pins are hidden here. GPIO1 is shown as analog only because firmware blocks it as an output.</div>
-      </section>
-
-      <section style="margin-top:18px">
-        <h2>Triggers</h2>
-        <table>
-          <thead><tr><th>Slot</th><th>Name</th><th>Type</th><th>Message</th><th>GPIO</th></tr></thead>
-          <tbody id="triggerRows"><tr><td colspan="5" class="sub">Click List to query the device.</td></tr></tbody>
-        </table>
-      </section>
-
-      <section style="margin-top:18px">
-        <h2>Activity</h2>
-        <div id="log" class="log">Ready.</div>
-      </section>
-
-      <section id="flashConsoleWrap" class="console-wrap">
-        <div class="console-head">
-          <h2 style="margin:0">Firmware console</h2>
-          <div id="flashStatus" class="console-status">Idle</div>
-        </div>
-        <div id="flashConsole"></div>
-        <div class="hint">Live PlatformIO build/upload output. Keep this open until it reports success or failure.</div>
-      </section>
-    </div>
-
-    <section class="full">
-      <h2>Device console</h2>
-      <div class="monitor-toolbar">
-        <button class="primary" onclick="monitorConnect()">Connect</button>
-        <button onclick="monitorDisconnect()">Disconnect</button>
-        <button onclick="monitorClear()">Clear</button>
-      </div>
-      <div id="monitorStatus" class="console-status">Disconnected</div>
-      <div id="serialMonitor" class="serial-monitor">Click Connect to open the Meshtastic serial session and stream device logs / DM replies.</div>
+    <section>
+      <h2>4. Test</h2>
+      <p class="hint" style="margin-top:0">Sends a DM to this node over USB (same as a mesh DM).</p>
       <div class="send-row">
-        <input id="monitorInput" placeholder="!dmtrigger:list   or   read5   (sent as DM to this node)" autocomplete="off">
-        <button class="primary" onclick="monitorSend()">Send DM</button>
+        <input id="monitorInput" placeholder="open7" autocomplete="off">
+        <button class="primary" onclick="monitorSend()">Send</button>
       </div>
-      <div class="hint">
-        This uses the Meshtastic protobuf serial API (not a raw UART dump). Firmware <code>LOG_*</code> lines appear here when the API streams them.
-        Try: <code>!dmtrigger:list</code>, then from another radio send <code>read5</code> as a <b>Direct Message</b> to this node (channel messages are ignored).
-        Watch for <code>DmTrigger: matched</code> / <code>replying</code> here. Disconnect before writing firmware.
-      </div>
+      <div id="monitorStatus" class="status">Log appears below when connected</div>
+      <div id="serialMonitor" class="mono" style="margin-top:10px">Connect to see device logs.</div>
     </section>
-  </main>
+
+    <section>
+      <details>
+        <summary>Advanced: write firmware</summary>
+        <p class="hint">Only needed after changing firmware code — not for saving triggers.</p>
+        <button id="writeFirmware" class="blue" disabled onclick="writeFirmware()">Write firmware to board</button>
+        <div id="flashConsoleWrap" style="display:none; margin-top:12px">
+          <div class="status" id="flashStatus">Idle</div>
+          <div id="flashConsole" class="mono" style="margin-top:8px"></div>
+        </div>
+      </details>
+    </section>
+  </div>
 
   <script>
     const pinout = __PINOUT__;
-    let flashArmed = false;
+    let flashBusy = false;
+    let monitorCursor = 0;
+    let monitorConnected = false;
+    let editingSlot = -1;
 
     function log(msg) {
-      const el = document.getElementById('log');
-      el.textContent = `${new Date().toLocaleTimeString()}  ${msg}\n\n${el.textContent}`;
+      appendMonitorLocal(`[ui] ${msg}`);
     }
 
-    function setFlashArmed(armed) {
-      flashArmed = !!armed;
+    function appendMonitorLocal(line) {
+      const el = document.getElementById('serialMonitor');
+      if (el.textContent.startsWith('Connect to see')) el.textContent = '';
+      el.textContent += (el.textContent ? '\n' : '') + line;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function setDeviceStatus(text, cls) {
+      const el = document.getElementById('deviceStatus');
+      el.className = 'status' + (cls ? ' ' + cls : '');
+      el.textContent = text;
+    }
+
+    function updateWriteFirmwareButton() {
       const btn = document.getElementById('writeFirmware');
-      btn.disabled = !flashArmed;
-      btn.classList.toggle('enabled', flashArmed);
-      btn.title = flashArmed
-        ? 'Compile and flash heltec-v3 firmware to the selected port'
-        : 'Enabled after a trigger is saved successfully';
+      btn.disabled = !currentPort() || flashBusy;
     }
 
     async function api(path, body, timeoutMs = 30000) {
@@ -270,11 +227,15 @@ HTML = r"""<!doctype html>
         if (!res.ok || json.ok === false) throw new Error(json.error || `HTTP ${res.status}`);
         return json;
       } catch (err) {
-        if (err.name === 'AbortError') throw new Error(`Request timed out after ${Math.round(timeoutMs/1000)}s`);
+        if (err.name === 'AbortError') throw new Error(`Timed out after ${Math.round(timeoutMs/1000)}s`);
         throw err;
       } finally {
         clearTimeout(timer);
       }
+    }
+
+    function currentPort() {
+      return document.getElementById('port').value || null;
     }
 
     async function refreshPorts() {
@@ -291,73 +252,68 @@ HTML = r"""<!doctype html>
         if (!data.ports.length) {
           const opt = document.createElement('option');
           opt.value = '';
-          opt.textContent = 'Auto-detect';
+          opt.textContent = 'No USB device found';
           port.appendChild(opt);
         }
-        log(`Found ${data.ports.length} serial port(s).`);
+        updateWriteFirmwareButton();
       } catch (err) {
-        log(`Port refresh failed: ${err.message}`);
+        setDeviceStatus('Port refresh failed: ' + err.message, 'fail');
       }
     }
 
-    function currentPort() {
-      return document.getElementById('port').value || null;
-    }
-
-    async function sendCommand(command, parseList = false) {
-      log(`Sending ${command}`);
-      const data = await api('/api/command', {port: currentPort(), command}, 90000);
-      const replies = data.replies || [];
-      if (replies.length) log(`Reply:\n${replies.join('\n')}`);
-      else log('Command sent. No DM reply was captured before timeout.');
-      if (parseList) renderTriggers(replies.join('\n'));
-      return data;
+    function fillGpioSelect() {
+      const sel = document.getElementById('gpio');
+      const type = document.getElementById('type').value;
+      const cur = sel.value;
+      sel.innerHTML = '';
+      pinout.forEach(pin => {
+        if (type === 'output' && !pin.output) return;
+        const opt = document.createElement('option');
+        opt.value = pin.gpio;
+        opt.textContent = `${pin.label} — ${pin.note}`;
+        sel.appendChild(opt);
+      });
+      if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+      else if (type === 'output') sel.value = '7';
+      else sel.value = '6';
     }
 
     function updateType() {
       const isAnalog = document.getElementById('type').value === 'analog';
-      document.getElementById('durationBox').style.display = isAnalog ? 'none' : 'block';
+      document.getElementById('durationBox').style.display = isAnalog ? 'none' : 'grid';
       document.getElementById('analogBox').style.display = isAnalog ? 'block' : 'none';
+      fillGpioSelect();
     }
 
-    function setPin(gpio) {
-      document.getElementById('gpio').value = gpio;
-      document.querySelectorAll('.pin').forEach(el => el.classList.toggle('active', el.dataset.gpio == gpio));
+    function resetForm() {
+      editingSlot = -1;
+      document.getElementById('index').value = '-1';
+      document.getElementById('name').value = '';
+      document.getElementById('message').value = '';
+      document.getElementById('type').value = 'output';
+      document.getElementById('duration').value = '10000';
+      document.getElementById('multiplier').value = '1.0';
+      updateType();
     }
 
-    function buildPinout() {
-      const list = document.getElementById('pinList');
-      const dots = document.getElementById('pinDots');
-      list.innerHTML = '';
-      dots.innerHTML = '';
-      pinout.forEach((pin, i) => {
-        const btn = document.createElement('button');
-        btn.className = 'pin';
-        btn.dataset.gpio = pin.gpio;
-        btn.innerHTML = `<strong>${pin.label}</strong><small>${pin.note}</small>`;
-        btn.onclick = () => setPin(pin.gpio);
-        list.appendChild(btn);
+    function editTrigger(slot, name, type, message, gpio, duration) {
+      editingSlot = Number(slot);
+      document.getElementById('index').value = String(slot);
+      document.getElementById('name').value = name;
+      document.getElementById('message').value = message;
+      document.getElementById('type').value = type === 'analog' ? 'analog' : 'output';
+      updateType();
+      document.getElementById('gpio').value = String(gpio);
+      if (duration) document.getElementById('duration').value = String(duration);
+      document.getElementById('message').focus();
+    }
 
-        const y = 104 + i * 26;
-        const x = i % 2 === 0 ? 62 : 198;
-        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        circle.setAttribute('cx', x);
-        circle.setAttribute('cy', y);
-        circle.setAttribute('r', 8);
-        circle.setAttribute('fill', pin.output ? '#50c878' : '#e9b44c');
-        circle.style.cursor = 'pointer';
-        circle.onclick = () => setPin(pin.gpio);
-        dots.appendChild(circle);
-        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        label.setAttribute('x', x < 100 ? x - 12 : x + 12);
-        label.setAttribute('y', y + 4);
-        label.setAttribute('text-anchor', x < 100 ? 'end' : 'start');
-        label.setAttribute('fill', '#c8d8e4');
-        label.setAttribute('font-size', '10');
-        label.textContent = `GPIO${pin.gpio}`;
-        dots.appendChild(label);
-      });
-      setPin(7);
+    async function sendCommand(command, parseList = false) {
+      const data = await api('/api/command', {port: currentPort(), command}, 90000);
+      const replies = data.replies || [];
+      if (replies.length) appendMonitorLocal(replies.join('\n'));
+      if (parseList) renderTriggers(replies.join('\n'));
+      return data;
     }
 
     function validateForm() {
@@ -367,14 +323,16 @@ HTML = r"""<!doctype html>
       const gpio = Number(document.getElementById('gpio').value);
       const duration = Number(document.getElementById('duration').value);
       const pin = pinout.find(p => p.gpio === gpio);
-      if (!name || !message) throw new Error('Name and message are required.');
-      if (!pin) throw new Error(`GPIO${gpio} is not in the allowed Heltec V3 pin list.`);
-      if (type === 'output' && !pin.output) throw new Error(`GPIO${gpio} is not allowed as an output.`);
-      if (type === 'output' && duration <= 0) throw new Error('Duration must be greater than zero.');
+      if (!message) throw new Error('Message text is required.');
+      if (!name) document.getElementById('name').value = message.slice(0, 19);
+      if (!pin) throw new Error(`GPIO${gpio} is not allowed.`);
+      if (type === 'output' && !pin.output) throw new Error(`GPIO${gpio} cannot be an output.`);
+      if (type === 'output' && duration <= 0) throw new Error('Hold time must be > 0.');
     }
 
     async function saveTrigger() {
       try {
+        if (!monitorConnected) await monitorConnect();
         validateForm();
         const index = document.getElementById('index').value;
         const name = document.getElementById('name').value.trim();
@@ -386,120 +344,35 @@ HTML = r"""<!doctype html>
         const data = await sendCommand(`!dmtrigger:set|${index}|${name}|${type}|${message}|${gpio}|${duration}|${multiplier}`);
         const replies = (data.replies || []).join('\n');
         if (replies.includes('Set failed') || replies.includes('Not authorized')) {
-          setFlashArmed(false);
-          log('Device rejected the save — trigger was not stored.');
+          setDeviceStatus('Save rejected by device', 'fail');
           return;
         }
-        const listed = await listTriggers();
-        const listedText = ((listed && listed.replies) || []).join('\n');
-        const saved =
-          replies.includes('Trigger saved') ||
-          listedText.includes(`:${message}:`) ||
-          listedText.includes(`:${message}\n`) ||
-          listedText.includes(message);
-        if (saved) {
-          setFlashArmed(true);
-          log(`Trigger '${message}' is on the device (prefs, not firmware). No flash needed unless updating firmware code.`);
-        } else {
-          setFlashArmed(false);
-          log('Save reply missing — open Device console, Connect, send !dmtrigger:list and check for your message.');
-        }
+        await listTriggers();
+        const ok = replies.includes('Trigger saved') || document.getElementById('triggerRows').textContent.includes(message);
+        setDeviceStatus(ok ? `Saved “${message}” on GPIO${gpio}` : 'Saved — refresh list to confirm', ok ? 'ok' : '');
+        if (ok) resetForm();
       } catch (err) {
-        log(`Save failed: ${err.message}`);
-      }
-    }
-
-    async function writeFirmware() {
-      if (!flashArmed) return;
-      const port = currentPort();
-      if (!port) {
-        log('Select a serial port before writing firmware.');
-        return;
-      }
-      const ok = confirm(
-        'Write firmware to this device?\n\n' +
-        'This will compile and flash heltec-v3 over USB.\n' +
-        'Do NOT unplug the device while writing.\n\n' +
-        `Port: ${port}\n\nContinue?`
-      );
-      if (!ok) return;
-
-      const btn = document.getElementById('writeFirmware');
-      const wrap = document.getElementById('flashConsoleWrap');
-      const consoleEl = document.getElementById('flashConsole');
-      const statusEl = document.getElementById('flashStatus');
-      btn.disabled = true;
-      btn.textContent = 'Writing firmware…';
-      wrap.classList.add('visible');
-      consoleEl.textContent = '';
-      statusEl.className = 'console-status running';
-      statusEl.textContent = 'Starting…';
-      log(`Building and flashing heltec-v3 to ${port}. Watch the Firmware console below.`);
-
-      try {
-        await api('/api/flash', {port, env: 'heltec-v3'}, 15000);
-        let cursor = 0;
-        const startedAt = Date.now();
-        const maxMs = 20 * 60 * 1000;
-        while (true) {
-          if (Date.now() - startedAt > maxMs) {
-            throw new Error('Firmware write timed out after 20 minutes (no completion from server).');
-          }
-          const st = await api(`/api/flash/status?since=${cursor}`, null, 15000);
-          const lines = st.lines || [];
-          if (lines.length) {
-            consoleEl.textContent += (consoleEl.textContent ? '\n' : '') + lines.join('\n');
-            consoleEl.scrollTop = consoleEl.scrollHeight;
-            cursor = st.next || (cursor + lines.length);
-          }
-            if (st.running) {
-            const elapsed = Math.round((Date.now() - startedAt) / 1000);
-            statusEl.className = 'console-status running';
-            statusEl.textContent = `Running… ${elapsed}s`;
-            await new Promise(r => setTimeout(r, 500));
-            continue;
-          }
-          if (st.success) {
-            statusEl.className = 'console-status ok';
-            statusEl.textContent = `Succeeded in ${Math.round((Date.now() - startedAt) / 1000)}s`;
-            log('Firmware write succeeded.');
-            setFlashArmed(false);
-          } else {
-            statusEl.className = 'console-status fail';
-            statusEl.textContent = 'Failed';
-            throw new Error(st.error || 'Firmware write failed');
-          }
-          break;
-        }
-      } catch (err) {
-        statusEl.className = 'console-status fail';
-        statusEl.textContent = 'Failed';
-        log(`Firmware write failed: ${err.message}`);
-        setFlashArmed(true);
-      } finally {
-        btn.textContent = 'Write firmware';
-        btn.disabled = !flashArmed;
-        btn.classList.toggle('enabled', flashArmed);
+        setDeviceStatus('Save failed: ' + err.message, 'fail');
       }
     }
 
     async function listTriggers() {
       try {
+        if (!monitorConnected) await monitorConnect();
         return await sendCommand('!dmtrigger:list', true);
       } catch (err) {
-        log(`List failed: ${err.message}`);
+        setDeviceStatus('List failed: ' + err.message, 'fail');
         return null;
       }
     }
 
-    async function deleteTrigger() {
-      const index = prompt('Delete which trigger slot?');
-      if (index === null) return;
+    async function deleteSlot(slot) {
+      if (!confirm(`Delete trigger slot ${slot}?`)) return;
       try {
-        await sendCommand(`!dmtrigger:del|${Number(index)}`);
+        await sendCommand(`!dmtrigger:del|${Number(slot)}`);
         await listTriggers();
       } catch (err) {
-        log(`Delete failed: ${err.message}`);
+        setDeviceStatus('Delete failed: ' + err.message, 'fail');
       }
     }
 
@@ -509,7 +382,7 @@ HTML = r"""<!doctype html>
         await sendCommand('!dmtrigger:clear');
         await listTriggers();
       } catch (err) {
-        log(`Clear failed: ${err.message}`);
+        setDeviceStatus('Clear failed: ' + err.message, 'fail');
       }
     }
 
@@ -517,75 +390,68 @@ HTML = r"""<!doctype html>
       const tbody = document.getElementById('triggerRows');
       const rows = [];
       text.split(/\n/).forEach(line => {
-        const m = line.match(/^(\d+):([^:]*):([^:]*):([^:]*):gpio(\d+)/);
-        if (m) rows.push({slot:m[1], name:m[2], type:m[3], message:m[4], gpio:m[5]});
+        const m = line.match(/^(\d+):([^:]*):([^:]*):([^:]*):gpio(\d+)(?::(\d+)ms)?/);
+        if (m) rows.push({slot:m[1], name:m[2], type:m[3], message:m[4], gpio:m[5], duration:m[6]||''});
       });
       if (!rows.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="sub">No trigger list reply captured.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="4" class="empty">No triggers on device.</td></tr>';
         return;
       }
-      tbody.innerHTML = rows.map(r => `<tr><td>${r.slot}</td><td>${escapeHtml(r.name)}</td><td><span class="pill">${r.type}</span></td><td>${escapeHtml(r.message)}</td><td>GPIO${r.gpio}</td></tr>`).join('');
+      tbody.innerHTML = rows.map(r => {
+        const detail = r.type === 'output'
+          ? `GPIO${r.gpio}${r.duration ? ' · ' + r.duration + 'ms' : ''}`
+          : `GPIO${r.gpio} ADC`;
+        return `<tr>
+          <td><code>${escapeHtml(r.message)}</code></td>
+          <td><span class="pill">${r.type}</span></td>
+          <td>${detail}</td>
+          <td style="white-space:nowrap">
+            <button onclick='editTrigger(${r.slot},${JSON.stringify(r.name)},${JSON.stringify(r.type)},${JSON.stringify(r.message)},${r.gpio},${JSON.stringify(r.duration)})'>Edit</button>
+            <button class="danger" onclick="deleteSlot(${r.slot})">Delete</button>
+          </td>
+        </tr>`;
+      }).join('');
     }
 
     function escapeHtml(s) {
-      return s.replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+      return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
     }
 
-    buildPinout();
-    updateType();
-    setFlashArmed(false);
-    refreshPorts();
-    startMonitorPolling();
-    document.getElementById('monitorInput').addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter') monitorSend();
-    });
-
-    let monitorCursor = 0;
-    let monitorConnected = false;
-
-    function appendMonitorLocal(line) {
-      const el = document.getElementById('serialMonitor');
-      if (el.textContent.startsWith('Click Connect')) el.textContent = '';
-      el.textContent += (el.textContent ? '\n' : '') + line;
-      el.scrollTop = el.scrollHeight;
+    async function toggleConnect() {
+      if (monitorConnected) await monitorDisconnect();
+      else await monitorConnect();
     }
 
     async function monitorConnect() {
+      const btn = document.getElementById('connectBtn');
+      btn.disabled = true;
       try {
         const data = await api('/api/monitor/connect', {port: currentPort()}, 90000);
         monitorConnected = true;
         monitorCursor = data.next || 0;
-        document.getElementById('monitorStatus').className = 'console-status ok';
-        document.getElementById('monitorStatus').textContent = `Connected on ${data.port || currentPort() || 'auto'}`;
-        log('Device console connected.');
-        const st = document.getElementById('deviceStatus');
-        if (data.node_hex || data.short_name) {
-          const ch = data.channel_note || '';
-          st.innerHTML = `This node: <code>${data.short_name || '?'} ${data.node_hex || ''}</code>. ${ch}`;
-        }
+        btn.textContent = 'Disconnect';
+        const who = [data.short_name, data.node_hex].filter(Boolean).join(' ');
+        setDeviceStatus(who ? `Connected · ${who}` : `Connected · ${data.port || currentPort()}`, 'ok');
+        document.getElementById('monitorStatus').textContent = 'Connected — watching device log';
+        document.getElementById('monitorStatus').className = 'status ok';
+        await listTriggers();
       } catch (err) {
-        document.getElementById('monitorStatus').className = 'console-status fail';
-        document.getElementById('monitorStatus').textContent = 'Connect failed';
-        log(`Monitor connect failed: ${err.message}`);
+        setDeviceStatus('Connect failed: ' + err.message, 'fail');
+      } finally {
+        btn.disabled = false;
+        updateWriteFirmwareButton();
       }
     }
 
     async function monitorDisconnect() {
       try {
         await api('/api/monitor/disconnect', {}, 15000);
-        monitorConnected = false;
-        document.getElementById('monitorStatus').className = 'console-status';
-        document.getElementById('monitorStatus').textContent = 'Disconnected';
-        log('Device console disconnected.');
-      } catch (err) {
-        log(`Monitor disconnect failed: ${err.message}`);
-      }
-    }
-
-    function monitorClear() {
-      document.getElementById('serialMonitor').textContent = '';
-      api('/api/monitor/clear', {}, 5000).catch(() => {});
-      monitorCursor = 0;
+      } catch (_) {}
+      monitorConnected = false;
+      document.getElementById('connectBtn').textContent = 'Connect';
+      setDeviceStatus('Disconnected');
+      document.getElementById('monitorStatus').textContent = 'Disconnected';
+      document.getElementById('monitorStatus').className = 'status';
     }
 
     async function monitorSend() {
@@ -593,15 +459,12 @@ HTML = r"""<!doctype html>
       const text = input.value.trim();
       if (!text) return;
       try {
-        appendMonitorLocal(`> ${text}`);
+        if (!monitorConnected) await monitorConnect();
+        appendMonitorLocal('> ' + text);
         await api('/api/monitor/send', {port: currentPort(), text}, 30000);
         input.value = '';
-        monitorConnected = true;
-        document.getElementById('monitorStatus').className = 'console-status ok';
-        document.getElementById('monitorStatus').textContent = `Connected on ${currentPort() || 'auto'}`;
       } catch (err) {
-        appendMonitorLocal(`! send failed: ${err.message}`);
-        log(`Monitor send failed: ${err.message}`);
+        appendMonitorLocal('! ' + err.message);
       }
     }
 
@@ -612,32 +475,85 @@ HTML = r"""<!doctype html>
           const lines = st.lines || [];
           if (lines.length) {
             const el = document.getElementById('serialMonitor');
-            if (el.textContent.startsWith('Click Connect')) el.textContent = '';
+            if (el.textContent.startsWith('Connect to see')) el.textContent = '';
             el.textContent += (el.textContent ? '\n' : '') + lines.join('\n');
             el.scrollTop = el.scrollHeight;
             monitorCursor = st.next || (monitorCursor + lines.length);
           }
-          if (st.connected) {
+          if (st.connected && !monitorConnected) {
             monitorConnected = true;
-            const status = document.getElementById('monitorStatus');
-            if (!status.textContent.startsWith('Connected')) {
-              status.className = 'console-status ok';
-              status.textContent = `Connected on ${st.port || currentPort() || 'auto'}`;
-            }
-          } else if (monitorConnected && !st.flashing) {
+            document.getElementById('connectBtn').textContent = 'Disconnect';
+          } else if (!st.connected && monitorConnected && !st.flashing) {
             monitorConnected = false;
-            document.getElementById('monitorStatus').className = 'console-status';
-            document.getElementById('monitorStatus').textContent = 'Disconnected';
+            document.getElementById('connectBtn').textContent = 'Connect';
+            setDeviceStatus('Disconnected');
           }
-          if (st.flashing) {
-            document.getElementById('monitorStatus').className = 'console-status running';
-            document.getElementById('monitorStatus').textContent = 'Paused — firmware write in progress';
-          }
-        } catch (_) {
-          // ignore transient poll errors
-        }
+        } catch (_) {}
       }, 400);
     }
+
+    async function writeFirmware() {
+      const port = currentPort();
+      if (!port || flashBusy) return;
+      if (!confirm(`Flash heltec-v3 firmware to ${port}?\\n\\nDo not unplug during the write.`)) return;
+      if (monitorConnected) await monitorDisconnect();
+
+      const wrap = document.getElementById('flashConsoleWrap');
+      const consoleEl = document.getElementById('flashConsole');
+      const statusEl = document.getElementById('flashStatus');
+      const btn = document.getElementById('writeFirmware');
+      flashBusy = true;
+      updateWriteFirmwareButton();
+      btn.textContent = 'Writing…';
+      wrap.style.display = 'block';
+      consoleEl.textContent = '';
+      statusEl.className = 'status running';
+      statusEl.textContent = 'Starting…';
+
+      try {
+        await api('/api/flash', {port, env: 'heltec-v3'}, 15000);
+        let cursor = 0;
+        const startedAt = Date.now();
+        while (true) {
+          if (Date.now() - startedAt > 20 * 60 * 1000) throw new Error('Timed out after 20 minutes');
+          const st = await api(`/api/flash/status?since=${cursor}`, null, 15000);
+          const lines = st.lines || [];
+          if (lines.length) {
+            consoleEl.textContent += (consoleEl.textContent ? '\\n' : '') + lines.join('\\n');
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+            cursor = st.next || (cursor + lines.length);
+          }
+          if (st.running) {
+            statusEl.textContent = `Running… ${Math.round((Date.now() - startedAt) / 1000)}s`;
+            await new Promise(r => setTimeout(r, 500));
+            continue;
+          }
+          if (st.success) {
+            statusEl.className = 'status ok';
+            statusEl.textContent = 'Firmware write succeeded';
+          } else {
+            throw new Error(st.error || 'Firmware write failed');
+          }
+          break;
+        }
+      } catch (err) {
+        statusEl.className = 'status fail';
+        statusEl.textContent = 'Failed: ' + err.message;
+      } finally {
+        flashBusy = false;
+        btn.textContent = 'Write firmware to board';
+        updateWriteFirmwareButton();
+      }
+    }
+
+    fillGpioSelect();
+    updateType();
+    document.getElementById('port').addEventListener('change', updateWriteFirmwareButton);
+    document.getElementById('monitorInput').addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') monitorSend();
+    });
+    refreshPorts();
+    startMonitorPolling();
   </script>
 </body>
 </html>

@@ -428,8 +428,8 @@ bool DmTriggerModule::handleConfigCommand(const meshtastic_MeshPacket &mp, const
         int offset = snprintf(reply, sizeof(reply), "Triggers (%u/%u)", triggerCount, kMaxTriggers);
         for (uint8_t i = 0; i < triggerCount; i++) {
             const Trigger &t = triggers[i];
-            offset += snprintf(reply + offset, sizeof(reply) - offset, "\n%u:%s:%s:%s:gpio%u", i, t.name,
-                               triggerTypeName(t.type), t.message, t.gpio);
+            offset += snprintf(reply + offset, sizeof(reply) - offset, "\n%u:%s:%s:%s:gpio%u:%ums", i, t.name,
+                               triggerTypeName(t.type), t.message, t.gpio, (unsigned)t.outputDurationMs);
             if (offset >= (int)sizeof(reply) - 1)
                 break;
         }
@@ -512,17 +512,27 @@ float DmTriggerModule::readAnalogVolts(const Trigger &trigger) const
 
 void DmTriggerModule::pulseOutput(uint8_t gpio, uint32_t durationMs)
 {
+    // Keep relays energized long enough to actuate; clamp absurd values.
+    if (durationMs == 0)
+        durationMs = 1000;
+    if (durationMs > 600000)
+        durationMs = 600000;
+
     pinMode(gpio, OUTPUT);
     digitalWrite(gpio, HIGH);
 
-    const uint32_t offAtMs = millis() + (durationMs ? durationMs : 1000);
+    const uint32_t startMs = millis();
     for (ActiveOutput &slot : activeOutputs) {
         if (slot.gpio == 0 || slot.gpio == gpio) {
             slot.gpio = gpio;
-            slot.offAtMs = offAtMs;
+            // Store start; runOnce uses duration via offAtMs = start + duration (wrap-safe compare).
+            slot.offAtMs = startMs + durationMs;
+            if (slot.offAtMs == 0)
+                slot.offAtMs = 1; // 0 means empty slot
             break;
         }
     }
+    LOG_INFO("DmTrigger: GPIO %u HIGH for %u ms", gpio, (unsigned)durationMs);
     enabled = true;
     setIntervalFromNow(50);
 }
@@ -621,8 +631,11 @@ int32_t DmTriggerModule::runOnce()
     for (ActiveOutput &slot : activeOutputs) {
         if (slot.gpio == 0)
             continue;
-        if (slot.offAtMs != 0 && now >= slot.offAtMs) {
+        // Unsigned subtract is rollover-safe: fires once (now - start) reaches duration.
+        // offAtMs holds start+duration; treat due when (int32_t)(now - offAtMs) >= 0.
+        if (slot.offAtMs != 0 && (int32_t)(now - slot.offAtMs) >= 0) {
             digitalWrite(slot.gpio, LOW);
+            LOG_INFO("DmTrigger: GPIO %u LOW", slot.gpio);
             slot.gpio = 0;
             slot.offAtMs = 0;
             continue;
