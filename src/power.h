@@ -147,3 +147,7 @@ class Power : public concurrency::OSThread
 void battery_adcEnable();
 
 extern Power *power;
+
+#if defined(ARCH_ESP32) && defined(BATTERY_PIN)
+bool esp32ReadAdc1ChannelMillivolts(adc_channel_t channel, adc_atten_t atten, int *millivoltsOut);
+#endif
