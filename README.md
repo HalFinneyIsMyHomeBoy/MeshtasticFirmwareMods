@@ -32,7 +32,7 @@ python3 -m venv .venv
 .venv/bin/python bin/dm-trigger-web.py --port 8088
 ```
 
-Then open [http://127.0.0.1:8088](http://127.0.0.1:8088). Full notes (flashing, pinout, CLI): **[docs/dm-triggers.md](docs/dm-triggers.md)**.
+Then open [http://127.0.0.1:8088](http://127.0.0.1:8088). Full notes (flashing, pinout, CLI): **[docs/dm-triggers.md](docs/dm-triggers.md)**. Lightning design: **[docs/dm-triggers-lightning.md](docs/dm-triggers-lightning.md)**.
 
 ## Overview
 

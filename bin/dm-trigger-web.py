@@ -23,14 +23,23 @@ import glob
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+_BIN_DIR = Path(__file__).resolve().parent
+if str(_BIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_BIN_DIR))
+
+from ln.lnbits import LnBitsBackend
+from ln.tickets import normalize_hex32
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -112,6 +121,7 @@ HTML = r"""<!doctype html>
     .hint { color:var(--muted); font-size:13px; margin-top:8px; }
     .send-row { display:grid; grid-template-columns:1fr 100px; gap:8px; margin-top:10px; }
     td button { width:auto; padding:6px 10px; font-size:13px; }
+    #lnQr { display:none; margin-top:10px; background:#fff; padding:8px; border-radius:8px; width:220px; height:220px; }
     @media (max-width:560px) { .row, .row3 { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -182,10 +192,28 @@ HTML = r"""<!doctype html>
         <label for="multiplier">ADC multiplier</label>
         <input id="multiplier" type="number" min="0" step="0.01" value="1.0">
       </div>
+      <div class="row">
+        <div>
+          <label for="price">Price (sats, 0 = free)</label>
+          <input id="price" type="number" min="0" value="0">
+        </div>
+        <div>
+          <label for="lnMode">When paid</label>
+          <select id="lnMode">
+            <option value="A">Send DM now (online USB)</option>
+            <option value="B">Load LoRa ticket (pay now, trigger later)</option>
+          </select>
+        </div>
+      </div>
       <div class="btn-row">
         <button class="primary" onclick="saveTrigger()">Save to device</button>
         <button onclick="resetForm()">New trigger</button>
+        <button class="blue" onclick="createInvoice()">Get Lightning invoice</button>
       </div>
+      <div id="lnStatus" class="status">Save the trigger, then invoice if you want a Lightning price.</div>
+      <img id="lnQr" alt="Lightning invoice QR">
+      <div id="lnBolt11" class="mono" style="display:none; min-height:0; max-height:140px; margin-top:8px"></div>
+      <p class="hint" id="lnRecipe" style="display:none"></p>
       <p class="hint">Saves to device storage immediately. No firmware flash needed for trigger changes.</p>
     </section>
 
@@ -349,10 +377,23 @@ HTML = r"""<!doctype html>
       document.getElementById('type').value = 'output';
       document.getElementById('duration').value = '10000';
       document.getElementById('multiplier').value = '1.0';
+      document.getElementById('price').value = '0';
       updateType();
+      clearInvoiceUi();
     }
 
-    function editTrigger(slot, name, type, message, gpio, duration) {
+    function clearInvoiceUi() {
+      document.getElementById('lnQr').style.display = 'none';
+      document.getElementById('lnQr').removeAttribute('src');
+      document.getElementById('lnBolt11').style.display = 'none';
+      document.getElementById('lnBolt11').textContent = '';
+      document.getElementById('lnRecipe').style.display = 'none';
+      document.getElementById('lnRecipe').textContent = '';
+      document.getElementById('lnStatus').textContent = 'Save the trigger, then invoice if you want a Lightning price.';
+      document.getElementById('lnStatus').className = 'status';
+    }
+
+    function editTrigger(slot, name, type, message, gpio, duration, price) {
       editingSlot = Number(slot);
       document.getElementById('index').value = String(slot);
       document.getElementById('name').value = name;
@@ -361,6 +402,7 @@ HTML = r"""<!doctype html>
       updateType();
       document.getElementById('gpio').value = String(gpio);
       if (duration) document.getElementById('duration').value = String(duration);
+      document.getElementById('price').value = String(price || 0);
       document.getElementById('message').focus();
     }
 
@@ -398,6 +440,7 @@ HTML = r"""<!doctype html>
         const gpio = document.getElementById('gpio').value;
         const duration = type === 'output' ? document.getElementById('duration').value : 0;
         const multiplier = type === 'analog' ? document.getElementById('multiplier').value : 1.0;
+        const price = Number(document.getElementById('price').value || 0);
         const data = await sendCommand(`!dmtrigger:set|${index}|${name}|${type}|${message}|${gpio}|${duration}|${multiplier}`);
         const replies = (data.replies || []).join('\n');
         if (replies.includes('Set failed') || replies.includes('Not authorized')) {
@@ -405,9 +448,21 @@ HTML = r"""<!doctype html>
           return;
         }
         await listTriggers();
+        let slot = index;
+        if (slot === '-1') {
+          const row = [...document.querySelectorAll('#triggerRows tr')].find(tr => tr.textContent.includes(message));
+          slot = row ? (row.getAttribute('data-slot') || '-1') : '-1';
+        }
+        if (slot !== '-1') {
+          await sendCommand(`!dmtrigger:price|${slot}|${Math.max(0, price)}`);
+          await listTriggers();
+        }
         const ok = replies.includes('Trigger saved') || document.getElementById('triggerRows').textContent.includes(message);
         setDeviceStatus(ok ? `Saved “${message}” on GPIO${gpio}` : 'Saved — refresh list to confirm', ok ? 'ok' : '');
-        if (ok) resetForm();
+        if (ok) {
+          document.getElementById('index').value = String(slot);
+          editingSlot = Number(slot);
+        }
       } catch (err) {
         setDeviceStatus('Save failed: ' + err.message, 'fail');
       }
@@ -447,23 +502,25 @@ HTML = r"""<!doctype html>
       const tbody = document.getElementById('triggerRows');
       const rows = [];
       text.split(/\n/).forEach(line => {
-        const m = line.match(/^(\d+):([^:]*):([^:]*):([^:]*):gpio(\d+)(?::(\d+)ms)?/);
-        if (m) rows.push({slot:m[1], name:m[2], type:m[3], message:m[4], gpio:m[5], duration:m[6]||''});
+        const m = line.match(/^(\d+):([^:]*):([^:]*):([^:]*):gpio(\d+)(?::(\d+)ms)?(?::price=(\d+))?(?::tickets=(\d+))?/);
+        if (m) rows.push({slot:m[1], name:m[2], type:m[3], message:m[4], gpio:m[5], duration:m[6]||'', price:m[7]||'0', tickets:m[8]||'0'});
       });
       if (!rows.length) {
         tbody.innerHTML = '<tr><td colspan="4" class="empty">No triggers on device.</td></tr>';
         return;
       }
       tbody.innerHTML = rows.map(r => {
+        const paid = Number(r.price) > 0;
         const detail = r.type === 'output'
           ? `GPIO${r.gpio}${r.duration ? ' · ' + r.duration + 'ms' : ''}`
           : `GPIO${r.gpio} ADC`;
-        return `<tr>
+        const priceBit = paid ? ` · ${r.price} sat · ${r.tickets} ticket(s)` : '';
+        return `<tr data-slot="${r.slot}">
           <td><code>${escapeHtml(r.message)}</code></td>
           <td><span class="pill">${r.type}</span></td>
-          <td>${detail}</td>
+          <td>${detail}${priceBit}</td>
           <td style="white-space:nowrap">
-            <button onclick='editTrigger(${r.slot},${JSON.stringify(r.name)},${JSON.stringify(r.type)},${JSON.stringify(r.message)},${r.gpio},${JSON.stringify(r.duration)})'>Edit</button>
+            <button onclick='editTrigger(${r.slot},${JSON.stringify(r.name)},${JSON.stringify(r.type)},${JSON.stringify(r.message)},${r.gpio},${JSON.stringify(r.duration)},${JSON.stringify(r.price)})'>Edit</button>
             <button class="danger" onclick="deleteSlot(${r.slot})">Delete</button>
           </td>
         </tr>`;
@@ -472,6 +529,70 @@ HTML = r"""<!doctype html>
 
     function escapeHtml(s) {
       return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    async function createInvoice() {
+      const lnStatus = document.getElementById('lnStatus');
+      try {
+        if (!monitorConnected) await monitorConnect();
+        validateForm();
+        const index = document.getElementById('index').value;
+        if (index === '-1') throw new Error('Save the trigger first so it has a slot index.');
+        const price = Number(document.getElementById('price').value || 0);
+        if (price <= 0) throw new Error('Set a price greater than 0 sats.');
+        const mode = document.getElementById('lnMode').value === 'B' ? 'B' : 'A';
+        await sendCommand(`!dmtrigger:price|${index}|${price}`);
+        const st = await api('/api/ln/status');
+        if (!st.configured) {
+          throw new Error('LNBits is not configured. Set LNBITS_URL and LNBITS_INVOICE_KEY, then restart this server.');
+        }
+        lnStatus.className = 'status running';
+        lnStatus.textContent = 'Creating invoice…';
+        const inv = await api('/api/ln/invoice', {
+          port: currentPort(),
+          trigger_index: Number(index),
+          mode,
+          amount_sats: price,
+          phrase: document.getElementById('message').value.trim()
+        }, 30000);
+        const qr = document.getElementById('lnQr');
+        qr.src = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(inv.bolt11);
+        qr.style.display = 'block';
+        const bolt = document.getElementById('lnBolt11');
+        bolt.style.display = 'block';
+        bolt.textContent = inv.bolt11;
+        const recipe = document.getElementById('lnRecipe');
+        if (mode === 'B') {
+          recipe.style.display = 'block';
+          recipe.textContent = 'Ticket hash loaded on the device. After paying, DM phrase:<preimage> from any node (64 hex chars).';
+        } else {
+          recipe.style.display = 'block';
+          recipe.textContent = 'After paying, this PC will send the trigger phrase over USB.';
+        }
+        lnStatus.className = 'status running';
+        lnStatus.textContent = 'Waiting for payment…';
+        const started = Date.now();
+        while (Date.now() - started < 15 * 60 * 1000) {
+          const pay = await api('/api/ln/invoice/' + encodeURIComponent(inv.payment_hash), null, 15000);
+          if (pay.paid) {
+            lnStatus.className = 'status ok';
+            lnStatus.textContent = pay.fired
+              ? 'Paid — trigger sent over USB.'
+              : (mode === 'B' ? 'Paid. Use the preimage over LoRa when you are offline.' : 'Paid.');
+            if (pay.preimage && mode === 'B') {
+              recipe.style.display = 'block';
+              recipe.textContent = 'Field DM: ' + document.getElementById('message').value.trim() + ':' + pay.preimage;
+            }
+            await listTriggers();
+            return;
+          }
+          await new Promise(r => setTimeout(r, 2000));
+        }
+        throw new Error('Timed out waiting for payment');
+      } catch (err) {
+        lnStatus.className = 'status fail';
+        lnStatus.textContent = err.message;
+      }
     }
 
     async function toggleConnect() {
@@ -655,6 +776,93 @@ def _busy_port_error(port: str | None, exc: BaseException) -> RuntimeError:
 
 
 FLASH_LOCK = threading.Lock()
+
+
+def _load_env_file() -> None:
+    path = Path(__file__).resolve().parents[1] / ".env"
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key.startswith("LNBITS_"):
+            continue
+        os.environ.setdefault(key, value.strip().strip('"').strip("'"))
+
+
+_load_env_file()
+LN_WEBHOOK_SECRET = os.environ.get("LNBITS_WEBHOOK_SECRET", "").strip() or secrets.token_hex(16)
+
+
+def _ln_backend() -> LnBitsBackend | None:
+    url = os.environ.get("LNBITS_URL", "").strip()
+    key = os.environ.get("LNBITS_INVOICE_KEY", "").strip()
+    if not url or not key:
+        return None
+    return LnBitsBackend(url, key)
+
+
+class LnPending:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[str, dict[str, Any]] = {}
+
+    def put(self, payment_hash: str, meta: dict[str, Any]) -> None:
+        with self._lock:
+            self._items[payment_hash.lower()] = meta
+
+    def get(self, payment_hash: str) -> dict[str, Any] | None:
+        with self._lock:
+            item = self._items.get(payment_hash.lower())
+            return dict(item) if item else None
+
+    def update(self, payment_hash: str, **fields: Any) -> dict[str, Any] | None:
+        with self._lock:
+            item = self._items.get(payment_hash.lower())
+            if not item:
+                return None
+            item.update(fields)
+            return dict(item)
+
+
+LN_PENDING = LnPending()
+
+
+def _webhook_url() -> str | None:
+    base = os.environ.get("LNBITS_WEBHOOK_BASE", "").strip()
+    if not base:
+        return None
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}token={LN_WEBHOOK_SECRET}"
+
+
+def _fire_paid_invoice(payment_hash: str, preimage: str) -> dict[str, Any]:
+    item = LN_PENDING.get(payment_hash)
+    if not item:
+        return {"ok": True, "paid": True, "preimage": preimage, "fired": False, "unknown": True}
+    if item.get("fired"):
+        return {"ok": True, "paid": True, "preimage": item.get("preimage") or preimage, "fired": True}
+    mode = str(item.get("mode") or "A").upper()
+    port = item.get("port")
+    phrase = str(item.get("phrase") or "")
+    index = int(item.get("trigger_index") or 0)
+    fired = False
+    if mode == "A" and phrase:
+        SESSION.send_text(port, phrase)
+        fired = True
+    LN_PENDING.update(payment_hash, paid=True, preimage=preimage, fired=fired)
+    return {
+        "ok": True,
+        "paid": True,
+        "preimage": preimage,
+        "fired": fired,
+        "mode": mode,
+        "trigger_index": index,
+        "phrase": phrase,
+    }
 
 
 class _DebugTee:
@@ -1080,7 +1288,7 @@ FLASH_JOB = FlashJob()
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "DmTriggerWeb/0.2"
+    server_version = "DmTriggerWeb/0.3"
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -1090,6 +1298,35 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/api/ports"):
             self._send_json({"ok": True, "ports": list_ports()})
+            return
+        if parsed.path == "/api/ln/status":
+            backend = _ln_backend()
+            self._send_json({
+                "ok": True,
+                "enabled": True,
+                "backend": "lnbits" if backend else None,
+                "configured": backend is not None,
+                "webhook_configured": bool(os.environ.get("LNBITS_WEBHOOK_BASE", "").strip()),
+            })
+            return
+        if parsed.path.startswith("/api/ln/invoice/"):
+            payment_hash = parsed.path.rsplit("/", 1)[-1]
+            item = LN_PENDING.get(payment_hash)
+            if item and item.get("paid"):
+                self._send_json({
+                    "ok": True,
+                    "paid": True,
+                    "preimage": item.get("preimage") or "",
+                    "fired": bool(item.get("fired")),
+                })
+                return
+            backend = _ln_backend()
+            event = backend.check_payment(payment_hash) if backend else None
+            if event:
+                result = _fire_paid_invoice(event.payment_hash, event.preimage)
+                self._send_json(result)
+                return
+            self._send_json({"ok": True, "paid": False, "pending": item is not None})
             return
         if parsed.path.startswith("/api/flash/status"):
             qs = parse_qs(parsed.query)
@@ -1110,7 +1347,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"ok": False, "error": "not found"}, status=404)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path == "/api/command":
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/api/command":
             try:
                 payload = self._read_json()
                 command = str(payload.get("command", ""))
@@ -1125,7 +1364,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
             return
 
-        if self.path == "/api/monitor/connect":
+        if path == "/api/monitor/connect":
             try:
                 payload = self._read_json()
                 port = payload.get("port")
@@ -1136,14 +1375,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
             return
 
-        if self.path == "/api/monitor/disconnect":
+        if path == "/api/monitor/disconnect":
             try:
                 self._send_json(SESSION.disconnect())
             except Exception as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
             return
 
-        if self.path == "/api/monitor/clear":
+        if path == "/api/monitor/clear":
             try:
                 SESSION.clear_monitor()
                 self._send_json({"ok": True})
@@ -1151,7 +1390,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
             return
 
-        if self.path == "/api/monitor/send":
+        if path == "/api/monitor/send":
             try:
                 payload = self._read_json()
                 text = str(payload.get("text") or "").strip()
@@ -1169,13 +1408,98 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
             return
 
-        if self.path == "/api/flash":
+        if path == "/api/flash":
             try:
                 payload = self._read_json()
                 port = str(payload.get("port") or "")
                 env = str(payload.get("env") or "heltec-v3")
                 FLASH_JOB.start(port, env)
                 self._send_json({"ok": True, "started": True})
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if path == "/api/ln/invoice":
+            try:
+                backend = _ln_backend()
+                if backend is None:
+                    raise RuntimeError("LNBits is not configured (LNBITS_URL / LNBITS_INVOICE_KEY)")
+                payload = self._read_json()
+                port = payload.get("port")
+                if port is not None:
+                    port = str(port)
+                index = int(payload.get("trigger_index"))
+                mode = str(payload.get("mode") or "A").upper()
+                if mode not in ("A", "B"):
+                    raise ValueError("mode must be A or B")
+                amount = int(payload.get("amount_sats") or 0)
+                phrase = str(payload.get("phrase") or "").strip()
+                if amount <= 0:
+                    raise ValueError("amount_sats must be > 0")
+                if not phrase:
+                    raise ValueError("phrase is required")
+                extra = {
+                    "app": "dmtrigger",
+                    "port": port or "",
+                    "trigger_index": index,
+                    "phrase": phrase,
+                    "mode": mode,
+                }
+                invoice = backend.create_invoice(amount, f"DM trigger: {phrase}", extra, _webhook_url())
+                LN_PENDING.put(invoice.payment_hash, {
+                    "port": port,
+                    "trigger_index": index,
+                    "phrase": phrase,
+                    "mode": mode,
+                    "paid": False,
+                    "fired": False,
+                    "preimage": "",
+                    "bolt11": invoice.bolt11,
+                })
+                if mode == "B":
+                    hash_hex = normalize_hex32(invoice.payment_hash)
+                    replies = SESSION.send_command(port, f"!dmtrigger:ticket|{index}|{hash_hex}")
+                    if not any("Ticket stored" in r for r in replies):
+                        raise RuntimeError("Device rejected ticket load: " + " ".join(replies))
+                self._send_json({
+                    "ok": True,
+                    "bolt11": invoice.bolt11,
+                    "payment_hash": invoice.payment_hash,
+                    "expires_at": invoice.expires_at,
+                    "mode": mode,
+                })
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if path == "/api/ln/load-ticket":
+            try:
+                payload = self._read_json()
+                port = payload.get("port")
+                if port is not None:
+                    port = str(port)
+                index = int(payload.get("trigger_index"))
+                payment_hash = normalize_hex32(str(payload.get("payment_hash") or ""))
+                replies = SESSION.send_command(port, f"!dmtrigger:ticket|{index}|{payment_hash}")
+                self._send_json({"ok": True, "replies": replies})
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if path == "/api/lnbits/webhook":
+            try:
+                qs = parse_qs(parsed.query)
+                token = (qs.get("token") or [""])[0]
+                if token != LN_WEBHOOK_SECRET:
+                    self._send_json({"ok": False, "error": "unauthorized"}, status=401)
+                    return
+                backend = _ln_backend()
+                body = self._read_json()
+                event = backend.parse_webhook(body) if backend else None
+                if event is None:
+                    raise ValueError("LNBits is not configured")
+                result = _fire_paid_invoice(event.payment_hash, event.preimage)
+                self._send_json(result)
             except Exception as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
             return
@@ -1217,6 +1541,13 @@ def main() -> int:
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
     print(f"DM trigger configurator running at http://{args.host}:{args.port}")
+    backend = _ln_backend()
+    if backend:
+        print(f"Lightning: LNBits at {backend.url}")
+        if os.environ.get("LNBITS_WEBHOOK_BASE"):
+            print(f"Lightning webhook: {_webhook_url()}")
+    else:
+        print("Lightning: not configured (set LNBITS_URL and LNBITS_INVOICE_KEY)")
     print("Press Ctrl-C to stop.")
     try:
         server.serve_forever()

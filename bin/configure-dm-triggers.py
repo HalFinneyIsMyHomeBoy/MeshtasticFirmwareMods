@@ -77,6 +77,21 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("clear", help="Remove all triggers")
 
+    price = sub.add_parser("price", help="Set Lightning price in sats (0 = free)")
+    price.add_argument("index", type=int)
+    price.add_argument("sats", type=int)
+
+    ticket = sub.add_parser("ticket", help="Load a payment_hash ticket (64 hex)")
+    ticket.add_argument("index", type=int)
+    ticket.add_argument("payment_hash")
+
+    unticket = sub.add_parser("unticket", help="Remove an unused payment_hash ticket")
+    unticket.add_argument("index", type=int)
+    unticket.add_argument("payment_hash")
+
+    tickets = sub.add_parser("tickets", help="List unused tickets for a trigger")
+    tickets.add_argument("index", type=int)
+
     args = parser.parse_args(argv)
     iface = _connect(args.port)
     try:
@@ -88,6 +103,14 @@ def main(argv: list[str] | None = None) -> int:
             _send_command(iface, f"!dmtrigger:del|{args.index}", args.wait)
         elif args.cmd == "add":
             _send_command(iface, _build_set_command(args, args.index), args.wait)
+        elif args.cmd == "price":
+            _send_command(iface, f"!dmtrigger:price|{args.index}|{args.sats}", args.wait)
+        elif args.cmd == "ticket":
+            _send_command(iface, f"!dmtrigger:ticket|{args.index}|{args.payment_hash}", args.wait)
+        elif args.cmd == "unticket":
+            _send_command(iface, f"!dmtrigger:unticket|{args.index}|{args.payment_hash}", args.wait)
+        elif args.cmd == "tickets":
+            _send_command(iface, f"!dmtrigger:tickets|{args.index}", args.wait)
         else:  # pragma: no cover
             parser.error(f"unknown command {args.cmd}")
     finally:

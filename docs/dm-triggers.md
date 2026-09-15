@@ -72,6 +72,12 @@ Same venv, no browser:
 
 Commands are `!dmtrigger:` DMs to the local node (`list`, `set`, `del`, `clear`). The sender must be this node over USB, or hold a configured admin key.
 
+## Lightning
+
+Paid triggers (BOLT11 → GPIO / analog, including prepaid preimages over LoRa) are in **[docs/dm-triggers-lightning.md](dm-triggers-lightning.md)**.
+
+Set `LNBITS_URL` and `LNBITS_INVOICE_KEY`, restart the GUI, save a trigger with a sats price, then **Get Lightning invoice**.
+
 ## Adding another board
 
 Same pattern as V3/V4:

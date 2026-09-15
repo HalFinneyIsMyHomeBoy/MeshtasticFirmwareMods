@@ -10,10 +10,16 @@ class DmTriggerModule : public SinglePortModule, private concurrency::OSThread
 {
   public:
     static constexpr uint8_t kMaxTriggers = 8;
+    static constexpr uint8_t kMaxTickets = 8;
     static constexpr uint8_t kNameLen = 20;
     static constexpr uint8_t kMessageLen = 40;
+    static constexpr uint16_t kRxTextMax = 200;
 
     enum class TriggerType : uint8_t { Output = 0, AnalogReading = 1 };
+
+    struct Ticket {
+        uint8_t paymentHash[32]{};
+    };
 
     struct Trigger {
         bool enabled = false;
@@ -22,8 +28,10 @@ class DmTriggerModule : public SinglePortModule, private concurrency::OSThread
         uint32_t outputDurationMs = 0;
         float adcMultiplier = 1.0f;
         uint8_t adcAtten = 0;
+        uint32_t priceSats = 0;
         char name[kNameLen]{};
         char message[kMessageLen]{};
+        Ticket tickets[kMaxTickets]{};
     };
 
     DmTriggerModule();
@@ -65,6 +73,10 @@ class DmTriggerModule : public SinglePortModule, private concurrency::OSThread
     void sendDm(const meshtastic_MeshPacket &rx, const char *text);
     void sendConfigReply(const meshtastic_MeshPacket &rx, const char *text);
     bool parseSetCommand(const char *args, Trigger &out, int &indexOut) const;
+    uint8_t countTickets(uint8_t index) const;
+    bool addTicket(uint8_t index, const uint8_t hash[32]);
+    bool removeTicketHash(uint8_t index, const uint8_t hash[32]);
+    bool consumePreimage(uint8_t index, const uint8_t preimage[32]);
 };
 
 #endif

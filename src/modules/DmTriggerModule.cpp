@@ -11,6 +11,7 @@
 #include "main.h"
 #include "power.h"
 #include <Arduino.h>
+#include <SHA256.h>
 #include <ctype.h>
 #include <string.h>
 
@@ -21,12 +22,32 @@
 namespace
 {
 constexpr uint32_t kStateMagic = 0x444D5452; // 'DMTR'
-constexpr uint8_t kStateVersion = 1;
+constexpr uint8_t kStateVersion = 2;
+constexpr uint8_t kStateVersionV1 = 1;
 constexpr const char *kStateFile = "/prefs/dm_triggers.bin";
 constexpr uint32_t kAnalogReplyCooldownMs = 2000;
 constexpr char kConfigPrefix[] = "!dmtrigger:";
 
 #pragma pack(push, 1)
+struct PersistedTriggerV1 {
+    uint8_t enabled;
+    uint8_t type;
+    uint8_t gpio;
+    uint8_t adcAtten;
+    uint32_t outputDurationMs;
+    float adcMultiplier;
+    char name[DmTriggerModule::kNameLen];
+    char message[DmTriggerModule::kMessageLen];
+};
+
+struct PersistedStateV1 {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t count;
+    uint8_t reserved[2];
+    PersistedTriggerV1 triggers[DmTriggerModule::kMaxTriggers];
+};
+
 struct PersistedTrigger {
     uint8_t enabled;
     uint8_t type;
@@ -36,6 +57,8 @@ struct PersistedTrigger {
     float adcMultiplier;
     char name[DmTriggerModule::kNameLen];
     char message[DmTriggerModule::kMessageLen];
+    uint32_t priceSats;
+    uint8_t tickets[DmTriggerModule::kMaxTickets][32];
 };
 
 struct PersistedState {
@@ -255,6 +278,70 @@ static char *trimToken(char *token)
     *end = '\0';
     return token;
 }
+
+static int hexNibble(char c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+static bool parseHex32(const char *hex, uint8_t out[32])
+{
+    if (!hex || !out)
+        return false;
+    for (int i = 0; i < 32; i++) {
+        const int hi = hexNibble(hex[i * 2]);
+        const int lo = hexNibble(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0)
+            return false;
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return hex[64] == '\0';
+}
+
+static bool isAllZero(const uint8_t *bytes, size_t len)
+{
+    uint8_t acc = 0;
+    for (size_t i = 0; i < len; i++)
+        acc |= bytes[i];
+    return acc == 0;
+}
+
+static bool hashesEqual(const uint8_t a[32], const uint8_t b[32])
+{
+    uint8_t diff = 0;
+    for (int i = 0; i < 32; i++)
+        diff |= (uint8_t)(a[i] ^ b[i]);
+    return diff == 0;
+}
+
+static void sha256Bytes(const uint8_t *data, size_t len, uint8_t out[32])
+{
+    SHA256 sha;
+    sha.reset();
+    sha.update(data, len);
+    sha.finalize(out, 32);
+}
+
+static void copyTriggerCore(DmTriggerModule::Trigger &dst, uint8_t enabled, uint8_t type, uint8_t gpio, uint8_t adcAtten,
+                            uint32_t outputDurationMs, float adcMultiplier, const char *name, const char *message)
+{
+    dst = {};
+    dst.enabled = enabled != 0;
+    dst.type = (type == (uint8_t)DmTriggerModule::TriggerType::AnalogReading) ? DmTriggerModule::TriggerType::AnalogReading
+                                                                              : DmTriggerModule::TriggerType::Output;
+    dst.gpio = gpio;
+    dst.outputDurationMs = outputDurationMs;
+    dst.adcMultiplier = adcMultiplier;
+    dst.adcAtten = adcAtten;
+    copyStringField(dst.name, sizeof(dst.name), name);
+    copyStringField(dst.message, sizeof(dst.message), message);
+}
 } // namespace
 
 DmTriggerModule::DmTriggerModule() : SinglePortModule("DmTrigger", meshtastic_PortNum_TEXT_MESSAGE_APP), OSThread("DmTrigger")
@@ -290,8 +377,17 @@ bool DmTriggerModule::setTrigger(uint8_t index, const Trigger &trigger)
     if (trigger.message[0] == '\0')
         return false;
 
+    Trigger preserved{};
+    const bool preservePay = index < triggerCount;
+    if (preservePay)
+        preserved = triggers[index];
+
     triggers[index] = trigger;
     triggers[index].enabled = true;
+    if (preservePay) {
+        triggers[index].priceSats = preserved.priceSats;
+        memcpy(triggers[index].tickets, preserved.tickets, sizeof(preserved.tickets));
+    }
     if (index >= triggerCount)
         triggerCount = index + 1;
     return saveToDisk();
@@ -397,28 +493,57 @@ bool DmTriggerModule::loadFromDisk(bool &hadFile)
     }
     hadFile = true;
 
-    PersistedState state{};
-    const size_t got = file.read(reinterpret_cast<uint8_t *>(&state), sizeof(state));
+    uint8_t raw[sizeof(PersistedState)]{};
+    const size_t got = file.read(raw, sizeof(raw));
     file.close();
-    if (got != sizeof(state) || state.magic != kStateMagic || state.version != kStateVersion || state.count > kMaxTriggers) {
-        LOG_WARN("DmTrigger: invalid prefs (got=%u expect=%u magic=0x%08x ver=%u count=%u)", (unsigned)got,
-                 (unsigned)sizeof(state), state.magic, state.version, state.count);
+    if (got < 8) {
+        LOG_WARN("DmTrigger: prefs too small (%u)", (unsigned)got);
+        return false;
+    }
+
+    uint32_t magic = 0;
+    memcpy(&magic, raw, sizeof(magic));
+    const uint8_t version = raw[4];
+    const uint8_t count = raw[5];
+    if (magic != kStateMagic || count > kMaxTriggers) {
+        LOG_WARN("DmTrigger: invalid prefs (got=%u magic=0x%08x ver=%u count=%u)", (unsigned)got, magic, version, count);
         return false;
     }
 
     triggerCount = 0;
     memset(triggers, 0, sizeof(triggers));
+
+    if (version == kStateVersionV1) {
+        if (got < sizeof(PersistedStateV1)) {
+            LOG_WARN("DmTrigger: truncated v1 prefs");
+            return false;
+        }
+        PersistedStateV1 state{};
+        memcpy(&state, raw, sizeof(state));
+        for (uint8_t i = 0; i < state.count; i++) {
+            const PersistedTriggerV1 &src = state.triggers[i];
+            copyTriggerCore(triggers[i], src.enabled, src.type, src.gpio, src.adcAtten, src.outputDurationMs, src.adcMultiplier,
+                            src.name, src.message);
+            triggerCount++;
+        }
+        LOG_INFO("DmTrigger: migrated %u trigger(s) from v1 prefs", triggerCount);
+        return true;
+    }
+
+    if (version != kStateVersion || got != sizeof(PersistedState)) {
+        LOG_WARN("DmTrigger: invalid prefs (got=%u expect=%u magic=0x%08x ver=%u count=%u)", (unsigned)got,
+                 (unsigned)sizeof(PersistedState), magic, version, count);
+        return false;
+    }
+
+    PersistedState state{};
+    memcpy(&state, raw, sizeof(state));
     for (uint8_t i = 0; i < state.count; i++) {
         const PersistedTrigger &src = state.triggers[i];
-        Trigger &dst = triggers[i];
-        dst.enabled = src.enabled != 0;
-        dst.type = (src.type == (uint8_t)TriggerType::AnalogReading) ? TriggerType::AnalogReading : TriggerType::Output;
-        dst.gpio = src.gpio;
-        dst.outputDurationMs = src.outputDurationMs;
-        dst.adcMultiplier = src.adcMultiplier;
-        dst.adcAtten = src.adcAtten;
-        copyStringField(dst.name, sizeof(dst.name), src.name);
-        copyStringField(dst.message, sizeof(dst.message), src.message);
+        copyTriggerCore(triggers[i], src.enabled, src.type, src.gpio, src.adcAtten, src.outputDurationMs, src.adcMultiplier,
+                        src.name, src.message);
+        triggers[i].priceSats = src.priceSats;
+        memcpy(triggers[i].tickets, src.tickets, sizeof(src.tickets));
         triggerCount++;
     }
     LOG_INFO("DmTrigger: restored %u trigger(s) from disk", triggerCount);
@@ -445,8 +570,10 @@ bool DmTriggerModule::saveToDisk() const
         dst.outputDurationMs = src.outputDurationMs;
         dst.adcMultiplier = src.adcMultiplier;
         dst.adcAtten = src.adcAtten;
+        dst.priceSats = src.priceSats;
         copyStringField(dst.name, sizeof(dst.name), src.name);
         copyStringField(dst.message, sizeof(dst.message), src.message);
+        memcpy(dst.tickets, src.tickets, sizeof(src.tickets));
     }
 
     {
@@ -585,6 +712,71 @@ bool DmTriggerModule::parseSetCommand(const char *args, Trigger &out, int &index
     return true;
 }
 
+uint8_t DmTriggerModule::countTickets(uint8_t index) const
+{
+    if (index >= triggerCount)
+        return 0;
+    uint8_t n = 0;
+    for (const Ticket &t : triggers[index].tickets) {
+        if (!isAllZero(t.paymentHash, 32))
+            n++;
+    }
+    return n;
+}
+
+bool DmTriggerModule::addTicket(uint8_t index, const uint8_t hash[32])
+{
+    if (index >= triggerCount || !hash || isAllZero(hash, 32))
+        return false;
+    int empty = -1;
+    for (uint8_t i = 0; i < kMaxTickets; i++) {
+        if (isAllZero(triggers[index].tickets[i].paymentHash, 32)) {
+            if (empty < 0)
+                empty = i;
+            continue;
+        }
+        if (hashesEqual(triggers[index].tickets[i].paymentHash, hash))
+            return false;
+    }
+    if (empty < 0)
+        return false;
+    memcpy(triggers[index].tickets[empty].paymentHash, hash, 32);
+    return saveToDisk();
+}
+
+bool DmTriggerModule::removeTicketHash(uint8_t index, const uint8_t hash[32])
+{
+    if (index >= triggerCount || !hash)
+        return false;
+    for (Ticket &t : triggers[index].tickets) {
+        if (hashesEqual(t.paymentHash, hash)) {
+            memset(t.paymentHash, 0, 32);
+            return saveToDisk();
+        }
+    }
+    return false;
+}
+
+bool DmTriggerModule::consumePreimage(uint8_t index, const uint8_t preimage[32])
+{
+    if (index >= triggerCount || !preimage || isAllZero(preimage, 32))
+        return false;
+    uint8_t digest[32];
+    sha256Bytes(preimage, 32, digest);
+    for (Ticket &t : triggers[index].tickets) {
+        if (isAllZero(t.paymentHash, 32))
+            continue;
+        if (!hashesEqual(t.paymentHash, digest))
+            continue;
+        memset(t.paymentHash, 0, 32);
+        if (!saveToDisk())
+            return false;
+        LOG_INFO("DmTrigger: burned ticket on '%s'", triggers[index].message);
+        return true;
+    }
+    return false;
+}
+
 bool DmTriggerModule::handleConfigCommand(const meshtastic_MeshPacket &mp, const char *text)
 {
     if (!text || strncmp(text, kConfigPrefix, sizeof(kConfigPrefix) - 1) != 0)
@@ -602,8 +794,9 @@ bool DmTriggerModule::handleConfigCommand(const meshtastic_MeshPacket &mp, const
         int offset = snprintf(reply, sizeof(reply), "Triggers (%u/%u)", triggerCount, kMaxTriggers);
         for (uint8_t i = 0; i < triggerCount; i++) {
             const Trigger &t = triggers[i];
-            offset += snprintf(reply + offset, sizeof(reply) - offset, "\n%u:%s:%s:%s:gpio%u:%ums", i, t.name,
-                               triggerTypeName(t.type), t.message, t.gpio, (unsigned)t.outputDurationMs);
+            offset += snprintf(reply + offset, sizeof(reply) - offset, "\n%u:%s:%s:%s:gpio%u:%ums:price=%u:tickets=%u", i, t.name,
+                               triggerTypeName(t.type), t.message, t.gpio, (unsigned)t.outputDurationMs, (unsigned)t.priceSats,
+                               countTickets(i));
             if (offset >= (int)sizeof(reply) - 1)
                 break;
         }
@@ -651,6 +844,88 @@ bool DmTriggerModule::handleConfigCommand(const meshtastic_MeshPacket &mp, const
         LOG_INFO("DmTrigger: set index=%d msg='%s' gpio=%u ok=%u count=%u", index, trigger.message, trigger.gpio, ok,
                  triggerCount);
         sendConfigReply(mp, ok ? "Trigger saved" : "Set failed");
+        return true;
+    }
+
+    if (strncmp(cmd, "price|", 6) == 0) {
+        char buffer[48];
+        strncpy(buffer, cmd + 6, sizeof(buffer) - 1);
+        buffer[sizeof(buffer) - 1] = '\0';
+        char *savePtr = nullptr;
+        char *indexText = trimToken(strtok_r(buffer, "|", &savePtr));
+        char *satsText = trimToken(strtok_r(nullptr, "|", &savePtr));
+        if (!indexText || !satsText) {
+            sendConfigReply(mp, "Price failed: bad format");
+            return true;
+        }
+        const int index = atoi(indexText);
+        if (index < 0 || (uint8_t)index >= triggerCount) {
+            sendConfigReply(mp, "Price failed: bad index");
+            return true;
+        }
+        triggers[index].priceSats = (uint32_t)atoi(satsText);
+        sendConfigReply(mp, saveToDisk() ? "Price saved" : "Price failed");
+        return true;
+    }
+
+    if (strncmp(cmd, "ticket|", 7) == 0) {
+        char buffer[96];
+        strncpy(buffer, cmd + 7, sizeof(buffer) - 1);
+        buffer[sizeof(buffer) - 1] = '\0';
+        char *savePtr = nullptr;
+        char *indexText = trimToken(strtok_r(buffer, "|", &savePtr));
+        char *hashText = trimToken(strtok_r(nullptr, "|", &savePtr));
+        uint8_t hash[32];
+        if (!indexText || !hashText || !parseHex32(hashText, hash)) {
+            sendConfigReply(mp, "Ticket failed: bad format");
+            return true;
+        }
+        const int index = atoi(indexText);
+        if (index < 0 || !addTicket((uint8_t)index, hash))
+            sendConfigReply(mp, "Ticket failed");
+        else
+            sendConfigReply(mp, "Ticket stored");
+        return true;
+    }
+
+    if (strncmp(cmd, "unticket|", 9) == 0) {
+        char buffer[96];
+        strncpy(buffer, cmd + 9, sizeof(buffer) - 1);
+        buffer[sizeof(buffer) - 1] = '\0';
+        char *savePtr = nullptr;
+        char *indexText = trimToken(strtok_r(buffer, "|", &savePtr));
+        char *hashText = trimToken(strtok_r(nullptr, "|", &savePtr));
+        uint8_t hash[32];
+        if (!indexText || !hashText || !parseHex32(hashText, hash)) {
+            sendConfigReply(mp, "Unticket failed: bad format");
+            return true;
+        }
+        const int index = atoi(indexText);
+        if (index < 0 || !removeTicketHash((uint8_t)index, hash))
+            sendConfigReply(mp, "Unticket failed");
+        else
+            sendConfigReply(mp, "Ticket removed");
+        return true;
+    }
+
+    if (strncmp(cmd, "tickets|", 8) == 0) {
+        const int index = atoi(cmd + 8);
+        if (index < 0 || (uint8_t)index >= triggerCount) {
+            sendConfigReply(mp, "Tickets failed: bad index");
+            return true;
+        }
+        char reply[220];
+        int offset = snprintf(reply, sizeof(reply), "Tickets %u unused=%u price=%u", (unsigned)index, countTickets((uint8_t)index),
+                              (unsigned)triggers[index].priceSats);
+        for (uint8_t i = 0; i < kMaxTickets; i++) {
+            const uint8_t *h = triggers[index].tickets[i].paymentHash;
+            if (isAllZero(h, 32))
+                continue;
+            offset += snprintf(reply + offset, sizeof(reply) - offset, "\n%u:%02x%02x%02x%02x…", i, h[0], h[1], h[2], h[3]);
+            if (offset >= (int)sizeof(reply) - 1)
+                break;
+        }
+        sendConfigReply(mp, reply);
         return true;
     }
 
@@ -748,7 +1023,7 @@ ProcessMessage DmTriggerModule::handleReceived(const meshtastic_MeshPacket &mp)
     if (payload.payload.size == 0)
         return ProcessMessage::CONTINUE;
 
-    char text[kMessageLen + 16];
+    char text[kRxTextMax + 1];
     size_t len = payload.payload.size;
     if (len >= sizeof(text))
         len = sizeof(text) - 1;
@@ -774,16 +1049,57 @@ ProcessMessage DmTriggerModule::handleReceived(const meshtastic_MeshPacket &mp)
 
     LOG_INFO("DmTrigger: DM from=0x%08x text='%s' (len=%u) checking %u trigger(s)", mp.from, text, (unsigned)len, triggerCount);
 
+    const bool usbOrSelf = (mp.from == 0) || isFromUs(&mp);
+
     for (uint8_t i = 0; i < triggerCount; i++) {
-        const Trigger &trigger = triggers[i];
+        Trigger &trigger = triggers[i];
         if (!trigger.enabled || trigger.message[0] == '\0')
             continue;
 
         const size_t queryLen = strlen(trigger.message);
-        if (len != queryLen || strncasecmp(text, trigger.message, queryLen) != 0)
+        if (len < queryLen || strncasecmp(text, trigger.message, queryLen) != 0)
             continue;
 
-        LOG_INFO("DmTrigger: matched '%s' type=%u gpio=%u from=0x%08x", trigger.message, (unsigned)trigger.type, trigger.gpio,
+        const bool exact = (len == queryLen);
+        const bool ticketForm = (len == queryLen + 1 + 64 && text[queryLen] == ':');
+
+        if (trigger.priceSats == 0 || usbOrSelf) {
+            if (exact) {
+                LOG_INFO("DmTrigger: matched '%s' type=%u gpio=%u from=0x%08x", trigger.message, (unsigned)trigger.type,
+                         trigger.gpio, mp.from);
+                handleTriggerAction(mp, trigger);
+                return ProcessMessage::CONTINUE;
+            }
+            if (usbOrSelf && ticketForm) {
+                uint8_t preimage[32];
+                char hex[65];
+                memcpy(hex, text + queryLen + 1, 64);
+                hex[64] = '\0';
+                if (parseHex32(hex, preimage) && consumePreimage(i, preimage)) {
+                    handleTriggerAction(mp, trigger);
+                    return ProcessMessage::CONTINUE;
+                }
+            }
+            continue;
+        }
+
+        if (exact) {
+            LOG_INFO("DmTrigger: ignoring unpaid phrase for priced trigger '%s'", trigger.message);
+            continue;
+        }
+        if (!ticketForm)
+            continue;
+
+        uint8_t preimage[32];
+        char hex[65];
+        memcpy(hex, text + queryLen + 1, 64);
+        hex[64] = '\0';
+        if (!parseHex32(hex, preimage) || !consumePreimage(i, preimage)) {
+            LOG_WARN("DmTrigger: ticket not found (missing or already spent) for '%s'", trigger.message);
+            continue;
+        }
+
+        LOG_INFO("DmTrigger: paid match '%s' type=%u gpio=%u from=0x%08x", trigger.message, (unsigned)trigger.type, trigger.gpio,
                  mp.from);
         handleTriggerAction(mp, trigger);
         return ProcessMessage::CONTINUE;
