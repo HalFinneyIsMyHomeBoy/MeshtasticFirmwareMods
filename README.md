@@ -21,11 +21,22 @@
 	<a href="https://meshtastic.org/docs/">Documentation</a>
 </div>
 
+## This fork: DM GPIO triggers
+
+Heltec V3 boards can pulse a GPIO or return a voltage when they receive a matching direct message. The local web GUI is the easiest way to try it:
+
+```bash
+cd MeshtasticFirmwareMods
+python3 -m venv .venv
+.venv/bin/pip install meshtastic pypubsub
+.venv/bin/python bin/dm-trigger-web.py --port 8088
+```
+
+Then open [http://127.0.0.1:8088](http://127.0.0.1:8088). Full notes (flashing, pinout, CLI): **[docs/dm-triggers.md](docs/dm-triggers.md)**.
+
 ## Overview
 
-This repository contains the official device firmware for Meshtastic, an open-source LoRa mesh networking project designed for long-range, low-power communication without relying on internet or cellular infrastructure. The firmware supports various hardware platforms, including ESP32, nRF52, RP2040/RP2350, and Linux-based devices.
-
-Meshtastic enables text messaging, location sharing, and telemetry over a decentralized mesh network, making it ideal for outdoor adventures, emergency preparedness, and remote operations.
+This repository is a fork of [Meshtastic firmware](https://github.com/meshtastic/firmware) with the DM GPIO trigger feature above. Upstream Meshtastic is an open-source LoRa mesh networking project for long-range, low-power communication without internet or cellular infrastructure. The firmware supports ESP32, nRF52, RP2040/RP2350, and Linux-based devices.
 
 ### Get Started
 
