@@ -1,6 +1,7 @@
 #pragma once
 
-#ifdef HELTEC_V3
+#include "configuration.h"
+#if HAS_DM_TRIGGER
 
 #include "SinglePortModule.h"
 #include "concurrency/OSThread.h"

@@ -1,13 +1,13 @@
-#ifdef HELTEC_V3
+#include "configuration.h"
+#if HAS_DM_TRIGGER
 
-#include "platform/extra_variants/heltec_v3/DmTriggerModule.h"
+#include "DmTriggerModule.h"
 #include "FSCommon.h"
 #include "MeshService.h"
 #include "NodeDB.h"
 #include "SPILock.h"
 #include "SafeFile.h"
 #include "concurrency/LockGuard.h"
-#include "configuration.h"
 #include "main.h"
 #include "power.h"
 #include <Arduino.h>
@@ -68,13 +68,160 @@ static bool gpioToAdc1Channel(uint8_t gpio, adc_channel_t *channelOut)
 }
 #endif
 
-static bool isReservedHeltecGpio(uint8_t gpio)
+static bool reservedPin(uint8_t gpio, int pin)
 {
-    static const uint8_t reserved[] = {0, 8, 9, 10, 11, 12, 13, 14, 17, 18, 21, 37};
-    for (uint8_t pin : reserved) {
+    return pin >= 0 && gpio == static_cast<uint8_t>(pin);
+}
+
+static bool isReservedGpio(uint8_t gpio)
+{
+#ifdef BUTTON_PIN
+    if (reservedPin(gpio, BUTTON_PIN))
+        return true;
+#endif
+#ifdef ADC_CTRL
+    if (reservedPin(gpio, ADC_CTRL))
+        return true;
+#endif
+#ifdef VEXT_ENABLE
+    if (reservedPin(gpio, VEXT_ENABLE))
+        return true;
+#endif
+#ifdef LED_PIN
+    if (reservedPin(gpio, LED_PIN))
+        return true;
+#endif
+#ifdef LED_POWER
+    if (reservedPin(gpio, LED_POWER))
+        return true;
+#endif
+#ifdef RESET_OLED
+    if (reservedPin(gpio, RESET_OLED))
+        return true;
+#endif
+#ifdef I2C_SDA
+    if (reservedPin(gpio, I2C_SDA))
+        return true;
+#endif
+#ifdef I2C_SCL
+    if (reservedPin(gpio, I2C_SCL))
+        return true;
+#endif
+#ifdef LORA_CS
+    if (reservedPin(gpio, LORA_CS))
+        return true;
+#endif
+#ifdef LORA_SCK
+    if (reservedPin(gpio, LORA_SCK))
+        return true;
+#endif
+#ifdef LORA_MISO
+    if (reservedPin(gpio, LORA_MISO))
+        return true;
+#endif
+#ifdef LORA_MOSI
+    if (reservedPin(gpio, LORA_MOSI))
+        return true;
+#endif
+#ifdef LORA_RESET
+    if (reservedPin(gpio, LORA_RESET))
+        return true;
+#endif
+#ifdef LORA_DIO0
+    if (reservedPin(gpio, LORA_DIO0))
+        return true;
+#endif
+#ifdef LORA_DIO1
+    if (reservedPin(gpio, LORA_DIO1))
+        return true;
+#endif
+#ifdef LORA_DIO2
+    if (reservedPin(gpio, LORA_DIO2))
+        return true;
+#endif
+#ifdef LORA_PA_POWER
+    if (reservedPin(gpio, LORA_PA_POWER))
+        return true;
+#endif
+#ifdef LORA_GC1109_PA_EN
+    if (reservedPin(gpio, LORA_GC1109_PA_EN))
+        return true;
+#endif
+#ifdef LORA_GC1109_PA_TX_EN
+    if (reservedPin(gpio, LORA_GC1109_PA_TX_EN))
+        return true;
+#endif
+#ifdef LORA_KCT8103L_PA_CSD
+    if (reservedPin(gpio, LORA_KCT8103L_PA_CSD))
+        return true;
+#endif
+#ifdef LORA_KCT8103L_PA_CTX
+    if (reservedPin(gpio, LORA_KCT8103L_PA_CTX))
+        return true;
+#endif
+#ifdef PIN_GPS_RESET
+    if (reservedPin(gpio, PIN_GPS_RESET))
+        return true;
+#endif
+#ifdef PIN_GPS_EN
+    if (reservedPin(gpio, PIN_GPS_EN))
+        return true;
+#endif
+#ifdef PIN_GPS_STANDBY
+    if (reservedPin(gpio, PIN_GPS_STANDBY))
+        return true;
+#endif
+#ifdef PIN_GPS_PPS
+    if (reservedPin(gpio, PIN_GPS_PPS))
+        return true;
+#endif
+#ifdef GPS_TX_PIN
+    if (reservedPin(gpio, GPS_TX_PIN))
+        return true;
+#endif
+#ifdef GPS_RX_PIN
+    if (reservedPin(gpio, GPS_RX_PIN))
+        return true;
+#endif
+#ifdef PIN_BUZZER
+    if (reservedPin(gpio, PIN_BUZZER))
+        return true;
+#endif
+#ifdef LGFX_PIN_SCK
+    if (reservedPin(gpio, LGFX_PIN_SCK))
+        return true;
+#endif
+#ifdef LGFX_PIN_MOSI
+    if (reservedPin(gpio, LGFX_PIN_MOSI))
+        return true;
+#endif
+#ifdef LGFX_PIN_DC
+    if (reservedPin(gpio, LGFX_PIN_DC))
+        return true;
+#endif
+#ifdef LGFX_PIN_CS
+    if (reservedPin(gpio, LGFX_PIN_CS))
+        return true;
+#endif
+#ifdef LGFX_PIN_BL
+    if (reservedPin(gpio, LGFX_PIN_BL))
+        return true;
+#endif
+#ifdef LGFX_PIN_RST
+    if (reservedPin(gpio, LGFX_PIN_RST))
+        return true;
+#endif
+#ifdef TOUCH_RST_PIN
+    if (reservedPin(gpio, TOUCH_RST_PIN))
+        return true;
+#endif
+#ifdef DM_TRIGGER_RESERVED_PINS
+    static const uint8_t extra[] = {DM_TRIGGER_RESERVED_PINS};
+    for (uint8_t pin : extra) {
         if (gpio == pin)
             return true;
     }
+#endif
     return false;
 }
 
@@ -185,10 +332,21 @@ void DmTriggerModule::installDefaultTriggers()
     output.enabled = true;
     output.type = TriggerType::Output;
     output.gpio = GPIO_TRIGGER_PIN;
+#ifdef GPIO_TRIGGER_MS
     output.outputDurationMs = GPIO_TRIGGER_MS;
+#else
+    output.outputDurationMs = 10000;
+#endif
     copyStringField(output.name, sizeof(output.name), "GPIO Output");
+#ifdef GPIO_TRIGGER_MESSAGE
     copyStringField(output.message, sizeof(output.message), GPIO_TRIGGER_MESSAGE);
-    appendTrigger(output);
+#else
+    copyStringField(output.message, sizeof(output.message), "Open_Seseme");
+#endif
+    if (isGpioAllowed(output.gpio, output.type))
+        appendTrigger(output);
+    else
+        LOG_WARN("DmTrigger: skipping default output GPIO %u (reserved on this board)", output.gpio);
 #endif
 
 #ifdef VOLTAGE_ADC_PIN
@@ -207,8 +365,15 @@ void DmTriggerModule::installDefaultTriggers()
     analog.adcMultiplier = 1.0f;
 #endif
     copyStringField(analog.name, sizeof(analog.name), "Voltage");
+#ifdef VOLTAGE_QUERY_MESSAGE
     copyStringField(analog.message, sizeof(analog.message), VOLTAGE_QUERY_MESSAGE);
-    appendTrigger(analog);
+#else
+    copyStringField(analog.message, sizeof(analog.message), "Get_Reading");
+#endif
+    if (isGpioAllowed(analog.gpio, analog.type))
+        appendTrigger(analog);
+    else
+        LOG_WARN("DmTrigger: skipping default analog GPIO %u (reserved on this board)", analog.gpio);
 #endif
 
     saveToDisk();
@@ -305,10 +470,19 @@ bool DmTriggerModule::isGpioAllowed(uint8_t gpio, TriggerType type) const
 {
     if (gpio == 0)
         return false;
-    if (isReservedHeltecGpio(gpio))
+    if (isReservedGpio(gpio))
         return false;
+#ifdef BATTERY_PIN
     if (type == TriggerType::Output && gpio == BATTERY_PIN)
         return false;
+#endif
+#ifdef ARCH_ESP32
+    if (type == TriggerType::AnalogReading) {
+        adc_channel_t channel;
+        if (!gpioToAdc1Channel(gpio, &channel))
+            return false;
+    }
+#endif
     return true;
 }
 

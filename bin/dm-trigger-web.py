@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web configurator for Heltec V3 DM GPIO triggers.
+"""Local web configurator for DM GPIO triggers (Heltec V3 / V4).
 
 Includes a Device console (Meshtastic serial session) to send DMs / !dmtrigger:
 commands and stream replies + firmware log lines.
@@ -12,7 +12,7 @@ Run:
 
   .venv/bin/python bin/dm-trigger-web.py --port 8088
 
-Then open http://127.0.0.1:8088 and select the device serial port.
+Then open http://127.0.0.1:8088, pick the board, and select the device serial port.
 """
 
 from __future__ import annotations
@@ -36,15 +36,38 @@ from urllib.parse import parse_qs, urlparse
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-PINOUT = [
-    {"gpio": 1, "label": "GPIO1", "note": "Battery ADC; analog only", "analog": True, "output": False},
-    {"gpio": 2, "label": "GPIO2", "note": "External GPIO / ADC", "analog": True, "output": True},
-    {"gpio": 3, "label": "GPIO3", "note": "External GPIO / ADC", "analog": True, "output": True},
-    {"gpio": 4, "label": "GPIO4", "note": "External GPIO / ADC", "analog": True, "output": True},
-    {"gpio": 5, "label": "GPIO5", "note": "External GPIO / ADC", "analog": True, "output": True},
-    {"gpio": 6, "label": "GPIO6 / J3-17", "note": "Default voltage input", "analog": True, "output": True},
-    {"gpio": 7, "label": "GPIO7", "note": "Default output trigger", "analog": True, "output": True},
-]
+BOARDS = {
+    "heltec-v3": {
+        "id": "heltec-v3",
+        "label": "Heltec V3",
+        "env": "heltec-v3",
+        "default_output": 7,
+        "default_analog": 6,
+        "pinout": [
+            {"gpio": 1, "label": "GPIO1", "note": "Battery ADC; analog only", "analog": True, "output": False},
+            {"gpio": 2, "label": "GPIO2", "note": "External GPIO / ADC", "analog": True, "output": True},
+            {"gpio": 3, "label": "GPIO3", "note": "External GPIO / ADC", "analog": True, "output": True},
+            {"gpio": 4, "label": "GPIO4", "note": "External GPIO / ADC", "analog": True, "output": True},
+            {"gpio": 5, "label": "GPIO5", "note": "External GPIO / ADC", "analog": True, "output": True},
+            {"gpio": 6, "label": "GPIO6 / J3-17", "note": "Default voltage input", "analog": True, "output": True},
+            {"gpio": 7, "label": "GPIO7", "note": "Default output trigger", "analog": True, "output": True},
+        ],
+    },
+    "heltec-v4": {
+        "id": "heltec-v4",
+        "label": "Heltec V4",
+        "env": "heltec-v4",
+        "default_output": 6,
+        "default_analog": 3,
+        "pinout": [
+            {"gpio": 1, "label": "GPIO1", "note": "Battery ADC; analog only", "analog": True, "output": False},
+            {"gpio": 3, "label": "GPIO3 / I2C SCL", "note": "Default voltage input; also external I2C SCL", "analog": True, "output": True},
+            {"gpio": 4, "label": "GPIO4 / I2C SDA", "note": "Header GPIO / ADC; also external I2C SDA", "analog": True, "output": True},
+            {"gpio": 6, "label": "GPIO6 / J3-17", "note": "Default output; also ADC. Buzzer on V4 TFT — skip on TFT", "analog": True, "output": True},
+            {"gpio": 45, "label": "GPIO45", "note": "User GPIO (digital only)", "analog": False, "output": True},
+        ],
+    },
+}
 
 
 HTML = r"""<!doctype html>
@@ -95,17 +118,23 @@ HTML = r"""<!doctype html>
 <body>
   <div class="wrap">
     <h1>DM Triggers</h1>
-    <p class="sub">Heltec V3 — save triggers to the device, then DM the message from another node.</p>
+    <p class="sub" id="boardHint">Save triggers to the device, then DM the message from another node.</p>
 
     <section>
       <h2>1. Connect</h2>
-      <div class="row3">
+      <div class="row">
+        <div>
+          <label for="board">Board</label>
+          <select id="board" onchange="onBoardChange()"></select>
+        </div>
         <div>
           <label for="port">USB port</label>
           <select id="port"></select>
         </div>
-        <button onclick="refreshPorts()" style="margin-top:22px">Refresh</button>
-        <button class="primary" id="connectBtn" onclick="toggleConnect()" style="margin-top:22px">Connect</button>
+      </div>
+      <div class="btn-row">
+        <button onclick="refreshPorts()">Refresh ports</button>
+        <button class="primary" id="connectBtn" onclick="toggleConnect()">Connect</button>
       </div>
       <div id="deviceStatus" class="status">Not connected</div>
     </section>
@@ -185,7 +214,8 @@ HTML = r"""<!doctype html>
   </div>
 
   <script>
-    const pinout = __PINOUT__;
+    const boards = __BOARDS__;
+    let pinout = boards["heltec-v3"].pinout;
     let flashBusy = false;
     let monitorCursor = 0;
     let monitorConnected = false;
@@ -234,6 +264,30 @@ HTML = r"""<!doctype html>
       }
     }
 
+    function currentBoard() {
+      return boards[document.getElementById('board').value] || boards['heltec-v3'];
+    }
+
+    function fillBoardSelect() {
+      const sel = document.getElementById('board');
+      sel.innerHTML = '';
+      Object.values(boards).forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b.id;
+        opt.textContent = b.label;
+        sel.appendChild(opt);
+      });
+      onBoardChange();
+    }
+
+    function onBoardChange() {
+      const board = currentBoard();
+      pinout = board.pinout;
+      document.getElementById('boardHint').textContent =
+        `${board.label} — save triggers to the device, then DM the message from another node.`;
+      fillGpioSelect();
+    }
+
     function currentPort() {
       return document.getElementById('port').value || null;
     }
@@ -268,14 +322,16 @@ HTML = r"""<!doctype html>
       sel.innerHTML = '';
       pinout.forEach(pin => {
         if (type === 'output' && !pin.output) return;
+        if (type === 'analog' && !pin.analog) return;
         const opt = document.createElement('option');
         opt.value = pin.gpio;
         opt.textContent = `${pin.label} — ${pin.note}`;
         sel.appendChild(opt);
       });
+      const board = currentBoard();
+      const fallback = String(type === 'output' ? board.default_output : board.default_analog);
       if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
-      else if (type === 'output') sel.value = '7';
-      else sel.value = '6';
+      else sel.value = fallback;
     }
 
     function updateType() {
@@ -327,6 +383,7 @@ HTML = r"""<!doctype html>
       if (!name) document.getElementById('name').value = message.slice(0, 19);
       if (!pin) throw new Error(`GPIO${gpio} is not allowed.`);
       if (type === 'output' && !pin.output) throw new Error(`GPIO${gpio} cannot be an output.`);
+      if (type === 'analog' && !pin.analog) throw new Error(`GPIO${gpio} is not ADC-capable.`);
       if (type === 'output' && duration <= 0) throw new Error('Hold time must be > 0.');
     }
 
@@ -495,7 +552,7 @@ HTML = r"""<!doctype html>
     async function writeFirmware() {
       const port = currentPort();
       if (!port || flashBusy) return;
-      if (!confirm(`Flash heltec-v3 firmware to ${port}?\\n\\nDo not unplug during the write.`)) return;
+      if (!confirm(`Flash ${currentBoard().label} firmware (${currentBoard().env}) to ${port}?\\n\\nDo not unplug during the write.`)) return;
       if (monitorConnected) await monitorDisconnect();
 
       const wrap = document.getElementById('flashConsoleWrap');
@@ -511,7 +568,7 @@ HTML = r"""<!doctype html>
       statusEl.textContent = 'Starting…';
 
       try {
-        await api('/api/flash', {port, env: 'heltec-v3'}, 15000);
+        await api('/api/flash', {port, env: currentBoard().env}, 15000);
         let cursor = 0;
         const startedAt = Date.now();
         while (true) {
@@ -546,6 +603,7 @@ HTML = r"""<!doctype html>
       }
     }
 
+    fillBoardSelect();
     fillGpioSelect();
     updateType();
     document.getElementById('port').addEventListener('change', updateWriteFirmwareButton);
@@ -924,8 +982,9 @@ class FlashJob:
     def start(self, port: str, env: str = "heltec-v3") -> None:
         if not port:
             raise ValueError("Serial port is required for firmware write")
-        if env != "heltec-v3":
-            raise ValueError("Only the heltec-v3 environment is supported by this configurator")
+        if env not in BOARDS:
+            allowed = ", ".join(sorted(BOARDS))
+            raise ValueError(f"Unsupported board env {env!r}. Use one of: {allowed}")
         if not Path(port).exists():
             raise RuntimeError(f"Serial port does not exist: {port}")
         if not FLASH_LOCK.acquire(blocking=False):
@@ -1026,7 +1085,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/" or parsed.path.startswith("/index.html"):
-            body = HTML.replace("__PINOUT__", json.dumps(PINOUT)).encode("utf-8")
+            body = HTML.replace("__BOARDS__", json.dumps(BOARDS)).encode("utf-8")
             self._send(200, body, "text/html; charset=utf-8")
             return
         if parsed.path.startswith("/api/ports"):

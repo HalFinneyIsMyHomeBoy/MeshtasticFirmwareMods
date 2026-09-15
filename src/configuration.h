@@ -413,6 +413,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #ifndef HAS_SCREEN
 #define HAS_SCREEN 0
 #endif
+#ifndef HAS_DM_TRIGGER
+#define HAS_DM_TRIGGER 0
+#endif
 #ifndef HAS_TFT
 #define HAS_TFT 0
 #endif

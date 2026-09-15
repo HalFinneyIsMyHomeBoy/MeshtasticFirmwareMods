@@ -48,8 +48,8 @@
 #include "modules/HopScalingModule.h"
 #endif
 #include "modules/TextMessageModule.h"
-#ifdef HELTEC_V3
-#include "platform/extra_variants/heltec_v3/DmTriggerModule.h"
+#if HAS_DM_TRIGGER
+#include "modules/DmTriggerModule.h"
 #endif
 #if !MESHTASTIC_EXCLUDE_TRACEROUTE
 #include "modules/TraceRouteModule.h"
@@ -162,7 +162,7 @@ void setupModules()
 #if !MESHTASTIC_EXCLUDE_TEXTMESSAGE
     textMessageModule = new TextMessageModule();
 #endif
-#ifdef HELTEC_V3
+#if HAS_DM_TRIGGER
     new DmTriggerModule();
 #endif
 #if !MESHTASTIC_EXCLUDE_TRACEROUTE

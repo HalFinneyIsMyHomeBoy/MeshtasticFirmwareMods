@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configure Heltec V3 DM GPIO triggers over USB/BLE.
+"""Configure DM GPIO triggers over USB/BLE (Heltec V3 / V4).
 
 Sends !dmtrigger: admin commands to the local node. The sender must either be
 the node itself (self-DM) or hold a configured admin key.

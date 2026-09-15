@@ -23,7 +23,7 @@
 
 ## This fork: DM GPIO triggers
 
-Heltec V3 boards can pulse a GPIO or return a voltage when they receive a matching direct message. The local web GUI is the easiest way to try it:
+Heltec V3 and V4 boards can pulse a GPIO or return a voltage when they receive a matching direct message. The local web GUI is the easiest way to try it:
 
 ```bash
 cd MeshtasticFirmwareMods
