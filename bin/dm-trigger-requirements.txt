@@ -1,0 +1,4 @@
+meshtastic
+pypubsub
+platformio
+uv

@@ -9,7 +9,7 @@
 #include "SafeFile.h"
 #include "concurrency/LockGuard.h"
 #include "main.h"
-#include "power.h"
+#include "Power.h"
 #include <Arduino.h>
 #include <ctype.h>
 #include <string.h>

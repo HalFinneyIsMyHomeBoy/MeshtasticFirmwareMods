@@ -27,7 +27,7 @@ def _connect(port: str | None):
     except ImportError as exc:  # pragma: no cover - runtime helper
         raise SystemExit(
             "meshtastic package required. Install into the repo venv:\n"
-            "  .venv/bin/pip install meshtastic pypubsub\n"
+            "  .venv/bin/pip install -r bin/dm-trigger-requirements.txt\n"
             "Then run with: .venv/bin/python bin/configure-dm-triggers.py ..."
         ) from exc
 

@@ -29,7 +29,7 @@ Heltec V3 and V4 boards can pulse a GPIO or return a voltage when they receive a
 ```bash
 cd MeshtasticFirmwareMods
 python3 -m venv .venv
-.venv/bin/pip install meshtastic pypubsub
+.venv/bin/pip install -r bin/dm-trigger-requirements.txt
 .venv/bin/python bin/dm-trigger-web.py --port 8088
 ```
 

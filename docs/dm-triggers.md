@@ -11,7 +11,7 @@ From a clone of this repo:
 ```bash
 cd MeshtasticFirmwareMods
 python3 -m venv .venv
-.venv/bin/pip install meshtastic pypubsub
+.venv/bin/pip install -r bin/dm-trigger-requirements.txt
 .venv/bin/python bin/dm-trigger-web.py --port 8088
 ```
 
@@ -25,12 +25,14 @@ Use a repo `.venv` — do not `pip install` into system Python.
 - Python 3 on the computer that will run the GUI
 - USB serial access to the board
 
-If the board is still on stock Meshtastic, flash this firmware first (PlatformIO), or use **Advanced → Write firmware** in the GUI after it is connected:
+If the board is still on stock Meshtastic, flash this firmware first, or use **Advanced → Write firmware** in the GUI after it is connected. That button uses PlatformIO from the repo `.venv`. On a new machine the first write also downloads the board toolchain into `~/.platformio` (not stored in git).
+
+From the command line, same venv:
 
 ```bash
-pio run -e heltec-v3 -t upload --upload-port /dev/ttyUSB0
+.venv/bin/pio run -e heltec-v3 -t upload --upload-port /dev/ttyUSB0
 # or
-pio run -e heltec-v4 -t upload --upload-port /dev/ttyUSB0
+.venv/bin/pio run -e heltec-v4 -t upload --upload-port /dev/ttyUSB0
 ```
 
 ## Using the page

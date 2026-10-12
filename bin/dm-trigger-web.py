@@ -6,7 +6,7 @@ commands and stream replies + firmware log lines.
 
 Setup (use the repo venv — do not pip install into system Python):
 
-  .venv/bin/pip install meshtastic pypubsub
+  .venv/bin/pip install -r bin/dm-trigger-requirements.txt
 
 Run:
 
@@ -110,6 +110,9 @@ HTML = r"""<!doctype html>
     details { margin-top:8px; }
     details summary { cursor:pointer; color:var(--muted); font-size:13px; padding:6px 0; }
     .hint { color:var(--muted); font-size:13px; margin-top:8px; }
+    .identity { margin-top:10px; padding:10px 12px; background:#121920; border:1px solid var(--line); border-radius:8px; }
+    .identity div + div { margin-top:4px; }
+    .identity .label { color:var(--muted); display:inline-block; width:96px; }
     .send-row { display:grid; grid-template-columns:1fr 100px; gap:8px; margin-top:10px; }
     td button { width:auto; padding:6px 10px; font-size:13px; }
     @media (max-width:560px) { .row, .row3 { grid-template-columns:1fr; } }
@@ -137,6 +140,10 @@ HTML = r"""<!doctype html>
         <button class="primary" id="connectBtn" onclick="toggleConnect()">Connect</button>
       </div>
       <div id="deviceStatus" class="status">Not connected</div>
+      <div id="deviceIdentity" class="identity" hidden>
+        <div><span class="label">Long name</span> <strong id="longName">—</strong></div>
+        <div><span class="label">Short name</span> <strong id="shortName">—</strong></div>
+      </div>
     </section>
 
     <section>
@@ -236,6 +243,19 @@ HTML = r"""<!doctype html>
       const el = document.getElementById('deviceStatus');
       el.className = 'status' + (cls ? ' ' + cls : '');
       el.textContent = text;
+    }
+
+    function showDeviceNames(longName, shortName) {
+      const box = document.getElementById('deviceIdentity');
+      document.getElementById('longName').textContent = longName || '—';
+      document.getElementById('shortName').textContent = shortName || '—';
+      box.hidden = false;
+    }
+
+    function hideDeviceNames() {
+      document.getElementById('deviceIdentity').hidden = true;
+      document.getElementById('longName').textContent = '—';
+      document.getElementById('shortName').textContent = '—';
     }
 
     function updateWriteFirmwareButton() {
@@ -487,7 +507,8 @@ HTML = r"""<!doctype html>
         monitorConnected = true;
         monitorCursor = data.next || 0;
         btn.textContent = 'Disconnect';
-        const who = [data.short_name, data.node_hex].filter(Boolean).join(' ');
+        showDeviceNames(data.long_name, data.short_name);
+        const who = [data.long_name, data.short_name ? `(${data.short_name})` : '', data.node_hex].filter(Boolean).join(' ');
         setDeviceStatus(who ? `Connected · ${who}` : `Connected · ${data.port || currentPort()}`, 'ok');
         document.getElementById('monitorStatus').textContent = 'Connected — watching device log';
         document.getElementById('monitorStatus').className = 'status ok';
@@ -506,6 +527,7 @@ HTML = r"""<!doctype html>
       } catch (_) {}
       monitorConnected = false;
       document.getElementById('connectBtn').textContent = 'Connect';
+      hideDeviceNames();
       setDeviceStatus('Disconnected');
       document.getElementById('monitorStatus').textContent = 'Disconnected';
       document.getElementById('monitorStatus').className = 'status';
@@ -818,7 +840,8 @@ class PortSession:
             except Exception as exc:
                 channel_note = f"(Could not read channels: {exc})"
             self.append_monitor(
-                f"[session] connected port={self._port} node=0x{(node or 0):08x} short={short_name or '?'}"
+                f"[session] connected port={self._port} node=0x{(node or 0):08x} "
+                f"long={long_name or '?'} short={short_name or '?'}"
             )
             return {
                 "ok": True,
@@ -842,7 +865,7 @@ class PortSession:
         except ImportError as exc:
             raise RuntimeError(
                 "Missing meshtastic/pypubsub. Install into the repo venv, then restart this server:\n"
-                "  .venv/bin/pip install meshtastic pypubsub\n"
+                "  .venv/bin/pip install -r bin/dm-trigger-requirements.txt\n"
                 "  .venv/bin/python bin/dm-trigger-web.py --port 8088"
             ) from exc
 
@@ -929,7 +952,7 @@ SESSION = PortSession()
 FIRMWARE_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _resolve_pio() -> str:
+def _find_pio() -> str | None:
     candidates = [
         shutil.which("pio"),
         str(Path.home() / ".platformio" / "penv" / "bin" / "pio"),
@@ -938,7 +961,68 @@ def _resolve_pio() -> str:
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return candidate
-    raise RuntimeError("PlatformIO `pio` not found on PATH or in ~/.platformio/penv/bin/pio")
+    return None
+
+
+def _install_pio(log) -> str:
+    """Install GUI requirements into the repo venv when pio is missing on a fresh clone."""
+    venv_python = FIRMWARE_ROOT / ".venv" / "bin" / "python"
+    requirements = FIRMWARE_ROOT / "bin" / "dm-trigger-requirements.txt"
+    if not venv_python.is_file():
+        raise RuntimeError(
+            "PlatformIO is not installed, and the repo .venv does not exist.\n"
+            "From the repo root:\n"
+            "  python3 -m venv .venv\n"
+            "  .venv/bin/pip install -r bin/dm-trigger-requirements.txt"
+        )
+    log("PlatformIO not found. Installing it into .venv (one time, needs network)…")
+    proc = subprocess.run(
+        [str(venv_python), "-m", "pip", "install", "-r", str(requirements)],
+        cwd=str(FIRMWARE_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(
+            "Could not install PlatformIO into .venv.\n"
+            f"{detail}\n"
+            "Install it yourself, then retry:\n"
+            "  .venv/bin/pip install -r bin/dm-trigger-requirements.txt"
+        )
+    found = _find_pio()
+    if not found:
+        raise RuntimeError("PlatformIO install finished, but .venv/bin/pio is still missing")
+    log(f"PlatformIO ready: {found}")
+    return found
+
+
+def _ensure_uv(log) -> None:
+    """pioarduino creates ~/.platformio/penv with uv when python3-venv is absent."""
+    uv_path = FIRMWARE_ROOT / ".venv" / "bin" / "uv"
+    if uv_path.is_file() or shutil.which("uv"):
+        return
+    venv_python = FIRMWARE_ROOT / ".venv" / "bin" / "python"
+    if not venv_python.is_file():
+        raise RuntimeError(
+            "uv is not installed, and the repo .venv does not exist.\n"
+            "  .venv/bin/pip install -r bin/dm-trigger-requirements.txt"
+        )
+    log("Installing uv so PlatformIO can create its build environment…")
+    proc = subprocess.run(
+        [str(venv_python), "-m", "pip", "install", "uv"],
+        cwd=str(FIRMWARE_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0 or not uv_path.is_file():
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(
+            "Could not install uv into .venv.\n"
+            f"{detail}\n"
+            "On Debian/Ubuntu you can instead install python3-venv, then retry:\n"
+            "  sudo apt install python3.12-venv"
+        )
 
 
 class FlashJob:
@@ -1008,7 +1092,8 @@ class FlashJob:
             SESSION.close()
             time.sleep(0.5)
 
-            pio = _resolve_pio()
+            pio = _find_pio() or _install_pio(self._append)
+            _ensure_uv(self._append)
             jobs = str(os.cpu_count() or 2)
             cmd = [
                 pio,
