@@ -87,7 +87,12 @@ HTML = r"""<!doctype html>
     section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
     label { display:block; margin:10px 0 4px; color:var(--muted); font-size:13px; }
     label:first-child { margin-top:0; }
-    input, select, button { width:100%; border-radius:8px; border:1px solid var(--line); background:#0e141a; color:var(--text); padding:10px 12px; font:inherit; }
+    input, select, textarea, button { width:100%; border-radius:8px; border:1px solid var(--line); background:#0e141a; color:var(--text); padding:10px 12px; font:inherit; }
+    textarea { min-height:72px; resize:vertical; }
+    label .count { float:right; }
+    label .count.at-limit { color:var(--danger); font-weight:600; }
+    textarea.at-limit { border-color:var(--danger); }
+    .field-warn { color:var(--danger); font-size:13px; margin:4px 0 0; }
     button { cursor:pointer; background:#24303c; }
     button.primary { background:var(--accent); color:#06230f; border-color:var(--accent); font-weight:700; }
     button.danger { background:transparent; color:var(--danger); border-color:#5a3030; }
@@ -101,11 +106,23 @@ HTML = r"""<!doctype html>
     .status.ok { color:var(--accent); }
     .status.fail { color:var(--danger); }
     .status.running { color:#e9b44c; }
-    table { width:100%; border-collapse:collapse; }
-    th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); font-size:14px; }
+    table { width:100%; max-width:100%; border-collapse:collapse; table-layout:fixed; }
+    th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); font-size:14px; vertical-align:top; overflow-wrap:anywhere; word-break:break-word; }
+    td code { overflow-wrap:anywhere; word-break:break-word; }
+    col.msg { width:28%; }
+    col.kind { width:5.5rem; }
+    col.act { width:9.5rem; }
+    td.actions { overflow-wrap:normal; word-break:normal; }
+    td.actions button { display:inline-block; width:auto; margin:0 4px 4px 0; }
+    td.detail { white-space:pre-wrap; }
     th { color:var(--muted); font-weight:600; }
     .pill { display:inline-block; padding:2px 7px; border-radius:999px; background:#24313c; font-size:12px; }
     .empty { color:var(--muted); font-size:14px; }
+    .loading-row td { border-bottom:none; padding:16px 8px; }
+    .loading { display:flex; align-items:center; gap:12px; color:var(--muted); font-size:14px; }
+    .loading strong { display:block; color:var(--text); font-weight:600; }
+    .spinner { width:16px; height:16px; flex:none; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
     .mono { white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; line-height:1.4; min-height:160px; max-height:320px; overflow:auto; background:#070b0f; border:1px solid var(--line); border-radius:8px; padding:10px; color:#b7c7d4; }
     details { margin-top:8px; }
     details summary { cursor:pointer; color:var(--muted); font-size:13px; padding:6px 0; }
@@ -149,7 +166,8 @@ HTML = r"""<!doctype html>
     <section>
       <h2>2. Saved triggers</h2>
       <table>
-        <thead><tr><th>Message</th><th>Type</th><th>Pin</th><th></th></tr></thead>
+        <colgroup><col class="msg"><col class="kind"><col class="detail"><col class="act"></colgroup>
+        <thead><tr><th>Message</th><th>Type</th><th>Detail</th><th></th></tr></thead>
         <tbody id="triggerRows"><tr><td colspan="4" class="empty">Connect, then click Refresh list.</td></tr></tbody>
       </table>
       <div class="btn-row">
@@ -161,8 +179,9 @@ HTML = r"""<!doctype html>
     <section>
       <h2>3. Add / update trigger</h2>
       <input type="hidden" id="index" value="-1">
-      <label for="message">Direct-message text (exact match)</label>
-      <input id="message" maxlength="39" placeholder="open7">
+      <label for="message">Direct-message text (exact match) <span id="messageCount" class="count">0/233 bytes</span></label>
+      <textarea id="message" rows="3" placeholder="open7" onbeforeinput="guardLimit(event)" oninput="updateCounts()"></textarea>
+      <p id="messageWarn" class="field-warn" hidden>233 bytes is the maximum.</p>
       <label for="name">Label</label>
       <input id="name" maxlength="19" placeholder="Relay 7">
       <div class="row">
@@ -171,12 +190,18 @@ HTML = r"""<!doctype html>
           <select id="type" onchange="updateType()">
             <option value="output">Pulse GPIO (relay)</option>
             <option value="analog">Read voltage (ADC)</option>
+            <option value="reply">Reply with text</option>
           </select>
         </div>
-        <div>
+        <div id="gpioBox">
           <label for="gpio">GPIO pin</label>
           <select id="gpio"></select>
         </div>
+      </div>
+      <div id="replyBox" style="display:none">
+        <label for="reply">Reply text <span id="replyCount" class="count">0/233 bytes</span></label>
+        <textarea id="reply" rows="3" placeholder="The door is opening" onbeforeinput="guardLimit(event)" oninput="updateCounts()"></textarea>
+        <p id="replyWarn" class="field-warn" hidden>233 bytes is the maximum.</p>
       </div>
       <div class="row" id="durationBox">
         <div>
@@ -193,7 +218,7 @@ HTML = r"""<!doctype html>
         <button class="primary" onclick="saveTrigger()">Save to device</button>
         <button onclick="resetForm()">New trigger</button>
       </div>
-      <p class="hint">Saves to device storage immediately. No firmware flash needed for trigger changes.</p>
+      <p class="hint">Match text and reply text can each be 233 bytes, the size of one Meshtastic message. Write firmware once so the device accepts that length. Later text edits do not need another write.</p>
     </section>
 
     <section>
@@ -355,10 +380,87 @@ HTML = r"""<!doctype html>
     }
 
     function updateType() {
-      const isAnalog = document.getElementById('type').value === 'analog';
-      document.getElementById('durationBox').style.display = isAnalog ? 'none' : 'grid';
+      const type = document.getElementById('type').value;
+      const isAnalog = type === 'analog';
+      const isReply = type === 'reply';
+      document.getElementById('durationBox').style.display = (isAnalog || isReply) ? 'none' : 'grid';
       document.getElementById('analogBox').style.display = isAnalog ? 'block' : 'none';
-      fillGpioSelect();
+      document.getElementById('gpioBox').style.display = isReply ? 'none' : 'block';
+      document.getElementById('replyBox').style.display = isReply ? 'block' : 'none';
+      if (!isReply) fillGpioSelect();
+    }
+
+    const TEXT_BYTES = 233;
+    let triggerCache = [];
+
+    function utf8Size(value) {
+      return new TextEncoder().encode(value).length;
+    }
+
+    function clampToBytes(value) {
+      if (utf8Size(value) <= TEXT_BYTES) return value;
+      let out = '';
+      let used = 0;
+      for (const ch of value) {
+        const n = utf8Size(ch);
+        if (used + n > TEXT_BYTES) break;
+        out += ch;
+        used += n;
+      }
+      return out;
+    }
+
+    function applyLimit(id, countId, warnId) {
+      const el = document.getElementById(id);
+      const count = document.getElementById(countId);
+      const warn = document.getElementById(warnId);
+      const clamped = clampToBytes(el.value);
+      if (clamped !== el.value) {
+        const caret = el.selectionStart || 0;
+        el.value = clamped;
+        const pos = Math.min(caret, clamped.length);
+        el.setSelectionRange(pos, pos);
+      }
+      const full = utf8Size(el.value) >= TEXT_BYTES;
+      count.textContent = utf8Size(el.value) + '/' + TEXT_BYTES + ' bytes';
+      count.classList.toggle('at-limit', full);
+      el.classList.toggle('at-limit', full);
+      warn.hidden = !full;
+    }
+
+    function guardLimit(event) {
+      const el = event.target;
+      if (event.inputType && event.inputType.startsWith('delete')) return;
+      if (event.data == null) return;
+      const start = el.selectionStart ?? el.value.length;
+      const end = el.selectionEnd ?? start;
+      const prefix = el.value.slice(0, start);
+      const suffix = el.value.slice(end);
+      const next = prefix + event.data + suffix;
+      if (utf8Size(next) <= TEXT_BYTES) return;
+      event.preventDefault();
+      const budget = TEXT_BYTES - utf8Size(prefix) - utf8Size(suffix);
+      let extra = '';
+      let used = 0;
+      if (budget > 0) {
+        for (const ch of event.data) {
+          const n = utf8Size(ch);
+          if (used + n > budget) break;
+          extra += ch;
+          used += n;
+        }
+      }
+      if (extra) {
+        el.value = prefix + extra + suffix;
+        const pos = prefix.length + extra.length;
+        el.setSelectionRange(pos, pos);
+      }
+      updateCounts();
+    }
+
+    function updateCounts() {
+      applyLimit('message', 'messageCount', 'messageWarn');
+      applyLimit('reply', 'replyCount', 'replyWarn');
     }
 
     function resetForm() {
@@ -366,45 +468,127 @@ HTML = r"""<!doctype html>
       document.getElementById('index').value = '-1';
       document.getElementById('name').value = '';
       document.getElementById('message').value = '';
+      document.getElementById('reply').value = '';
       document.getElementById('type').value = 'output';
       document.getElementById('duration').value = '10000';
       document.getElementById('multiplier').value = '1.0';
       updateType();
+      updateCounts();
     }
 
-    function editTrigger(slot, name, type, message, gpio, duration) {
+    function editTrigger(slot, name, type, message, gpio, duration, reply, multiplier) {
       editingSlot = Number(slot);
       document.getElementById('index').value = String(slot);
       document.getElementById('name').value = name;
       document.getElementById('message').value = message;
-      document.getElementById('type').value = type === 'analog' ? 'analog' : 'output';
+      document.getElementById('reply').value = reply || '';
+      document.getElementById('type').value = (type === 'analog' || type === 'reply') ? type : 'output';
       updateType();
-      document.getElementById('gpio').value = String(gpio);
+      if (type !== 'reply') document.getElementById('gpio').value = String(gpio);
       if (duration) document.getElementById('duration').value = String(duration);
+      if (multiplier) document.getElementById('multiplier').value = String(multiplier);
+      updateCounts();
       document.getElementById('message').focus();
+    }
+
+    function editCached(index) {
+      const row = triggerCache[index];
+      if (!row) return;
+      editTrigger(row.slot, row.name, row.type, row.message, row.gpio, row.duration, row.reply, row.multiplier);
     }
 
     async function sendCommand(command, parseList = false) {
       const data = await api('/api/command', {port: currentPort(), command}, 90000);
       const replies = data.replies || [];
       if (replies.length) appendMonitorLocal(replies.join('\n'));
-      if (parseList) renderTriggers(replies.join('\n'));
+      if (parseList) renderTriggers(replies);
       return data;
     }
 
     function validateForm() {
       const name = document.getElementById('name').value.trim();
       const type = document.getElementById('type').value;
-      const message = document.getElementById('message').value.trim();
+      const message = document.getElementById('message').value;
+      const reply = document.getElementById('reply').value;
       const gpio = Number(document.getElementById('gpio').value);
       const duration = Number(document.getElementById('duration').value);
+      if (!message.trim()) throw new Error('Message text is required.');
+      if (name.includes('|')) throw new Error('Label cannot contain |.');
+      if (utf8Size(message) > TEXT_BYTES) throw new Error('Match text is longer than 233 bytes.');
+      if (utf8Size(reply) > TEXT_BYTES) throw new Error('Reply text is longer than 233 bytes.');
+      if (!name) document.getElementById('name').value = message.trim().slice(0, 19);
+      if (type === 'reply') {
+        if (!reply.trim()) throw new Error('Reply text is required.');
+        return;
+      }
       const pin = pinout.find(p => p.gpio === gpio);
-      if (!message) throw new Error('Message text is required.');
-      if (!name) document.getElementById('name').value = message.slice(0, 19);
       if (!pin) throw new Error(`GPIO${gpio} is not allowed.`);
       if (type === 'output' && !pin.output) throw new Error(`GPIO${gpio} cannot be an output.`);
       if (type === 'analog' && !pin.analog) throw new Error(`GPIO${gpio} is not ADC-capable.`);
       if (type === 'output' && duration <= 0) throw new Error('Hold time must be > 0.');
+    }
+
+    const PACKET_BYTES = 200;
+
+    function chunkFrom(text, index, field, byteOffset) {
+      const header = `!dmtrigger:put|${index}|${field}|${byteOffset}|`;
+      const headerBytes = utf8Size(header);
+      let buf = '';
+      let bufBytes = 0;
+      let seen = 0;
+      for (const ch of text) {
+        const n = utf8Size(ch);
+        if (seen < byteOffset) {
+          seen += n;
+          continue;
+        }
+        if (headerBytes + bufBytes + n > PACKET_BYTES) break;
+        buf += ch;
+        bufBytes += n;
+        seen += n;
+      }
+      if (!buf) throw new Error('A single character does not fit in one message.');
+      return buf;
+    }
+
+    function rewindBytes(text, byteOffset) {
+      let seen = 0;
+      for (const ch of text) {
+        const n = utf8Size(ch);
+        if (seen + n > byteOffset) return seen;
+        seen += n;
+        if (seen === byteOffset) return seen;
+      }
+      return seen;
+    }
+
+    async function putField(index, field, text) {
+      let byteOffset = 0;
+      const total = utf8Size(text);
+      while (byteOffset < total) {
+        const before = byteOffset;
+        const chunk = chunkFrom(text, index, field, byteOffset);
+        const replies = await expectOk(`!dmtrigger:put|${index}|${field}|${byteOffset}|${chunk}`);
+        const match = replies.match(/Part ok\|(\d+)/);
+        let stored = match ? Number(match[1]) : (replies.includes('Part ok') ? before + utf8Size(chunk) : NaN);
+        if (!Number.isFinite(stored) || stored <= before) {
+          throw new Error(replies.trim() || 'Device did not accept the text');
+        }
+        byteOffset = stored < before + utf8Size(chunk) ? rewindBytes(text, stored) : stored;
+        if (byteOffset <= before) throw new Error('Device stopped accepting text at ' + stored + ' bytes');
+      }
+    }
+
+    async function expectOk(command) {
+      const data = await sendCommand(command);
+      const replies = (data.replies || []).join('\n');
+      if (replies.includes('Unknown !dmtrigger')) {
+        throw new Error('Write firmware to the board first. This device build does not store 233-byte trigger text yet.');
+      }
+      if (replies.includes('Set failed') || replies.includes('Not authorized')) {
+        throw new Error(replies.trim() || 'Save rejected by device');
+      }
+      return replies;
     }
 
     async function saveTrigger() {
@@ -414,30 +598,43 @@ HTML = r"""<!doctype html>
         const index = document.getElementById('index').value;
         const name = document.getElementById('name').value.trim();
         const type = document.getElementById('type').value;
-        const message = document.getElementById('message').value.trim();
-        const gpio = document.getElementById('gpio').value;
+        const message = document.getElementById('message').value;
+        const reply = type === 'reply' ? document.getElementById('reply').value : '';
+        const gpio = type === 'reply' ? 0 : document.getElementById('gpio').value;
         const duration = type === 'output' ? document.getElementById('duration').value : 0;
         const multiplier = type === 'analog' ? document.getElementById('multiplier').value : 1.0;
-        const data = await sendCommand(`!dmtrigger:set|${index}|${name}|${type}|${message}|${gpio}|${duration}|${multiplier}`);
-        const replies = (data.replies || []).join('\n');
-        if (replies.includes('Set failed') || replies.includes('Not authorized')) {
-          setDeviceStatus('Save rejected by device', 'fail');
-          return;
-        }
+        await expectOk(`!dmtrigger:open|${index}|${name}|${type}|${gpio}|${duration}|${multiplier}`);
+        await putField(index, 'm', message);
+        if (reply) await putField(index, 'r', reply);
+        const savedReplies = await expectOk(`!dmtrigger:commit|${index}`);
         await listTriggers();
-        const ok = replies.includes('Trigger saved') || document.getElementById('triggerRows').textContent.includes(message);
-        setDeviceStatus(ok ? `Saved “${message}” on GPIO${gpio}` : 'Saved — refresh list to confirm', ok ? 'ok' : '');
+        const ok = savedReplies.includes('Trigger saved');
+        const preview = message.trim().slice(0, 40);
+        const saved = type === 'reply' ? `Saved “${preview}”` : `Saved “${preview}” on GPIO${gpio}`;
+        setDeviceStatus(ok ? saved : 'Saved — refresh list to confirm', ok ? 'ok' : '');
         if (ok) resetForm();
       } catch (err) {
         setDeviceStatus('Save failed: ' + err.message, 'fail');
       }
     }
 
+    function setTriggerNote(text) {
+      document.getElementById('triggerRows').innerHTML =
+        '<tr><td colspan="4" class="empty">' + escapeHtml(text) + '</td></tr>';
+    }
+
+    function setTriggerLoading() {
+      document.getElementById('triggerRows').innerHTML =
+        '<tr class="loading-row"><td colspan="4"><div class="loading"><span class="spinner" aria-hidden="true"></span><span><strong>Loading saved triggers</strong>Checking the device. This usually takes a few seconds.</span></div></td></tr>';
+    }
+
     async function listTriggers() {
+      setTriggerLoading();
       try {
         if (!monitorConnected) await monitorConnect();
         return await sendCommand('!dmtrigger:list', true);
       } catch (err) {
+        setTriggerNote('Could not load saved triggers.');
         setDeviceStatus('List failed: ' + err.message, 'fail');
         return null;
       }
@@ -463,27 +660,85 @@ HTML = r"""<!doctype html>
       }
     }
 
-    function renderTriggers(text) {
+    function joinChunks(chunks) {
+      return chunks.sort((a, b) => a.offset - b.offset).map(c => c.data).join('');
+    }
+
+    function parseChunk(packet, prefix) {
+      if (!packet.startsWith(prefix)) return null;
+      const body = packet.slice(prefix.length);
+      const first = body.indexOf('|');
+      const second = body.indexOf('|', first + 1);
+      if (first < 0 || second < 0) return null;
+      return {
+        slot: body.slice(0, first),
+        offset: Number(body.slice(first + 1, second)),
+        data: body.slice(second + 1),
+      };
+    }
+
+    function renderTriggers(replies) {
       const tbody = document.getElementById('triggerRows');
-      const rows = [];
-      text.split(/\n/).forEach(line => {
-        const m = line.match(/^(\d+):([^:]*):([^:]*):([^:]*):gpio(\d+)(?::(\d+)ms)?/);
-        if (m) rows.push({slot:m[1], name:m[2], type:m[3], message:m[4], gpio:m[5], duration:m[6]||''});
+      const packets = Array.isArray(replies) ? replies : String(replies || '').split('\n');
+      const bySlot = new Map();
+      const oldLines = [];
+      let sawNew = false;
+      packets.forEach(packet => {
+        const messageChunk = parseChunk(packet, 'TriggerM|');
+        const replyChunk = parseChunk(packet, 'TriggerR|');
+        if (messageChunk || replyChunk) {
+          sawNew = true;
+          const chunk = messageChunk || replyChunk;
+          const row = bySlot.get(chunk.slot) || {slot: chunk.slot, name: '', type: '', message: '', gpio: '0', duration: '', reply: '', multiplier: '1', messageChunks: [], replyChunks: []};
+          (messageChunk ? row.messageChunks : row.replyChunks).push(chunk);
+          bySlot.set(chunk.slot, row);
+          return;
+        }
+        if (packet.startsWith('Trigger|')) {
+          sawNew = true;
+          const parts = packet.split('|');
+          const slot = parts[1] || '0';
+          const row = bySlot.get(slot) || {slot, name: '', type: '', message: '', gpio: '0', duration: '', reply: '', multiplier: '1', messageChunks: [], replyChunks: []};
+          row.name = parts[2] || '';
+          row.type = parts[3] || '';
+          row.gpio = parts[4] || '0';
+          row.duration = parts[5] || '';
+          row.multiplier = parts[6] || '1';
+          bySlot.set(slot, row);
+          return;
+        }
+        String(packet).split('\n').forEach(line => {
+          const m = line.match(/^(\d+):([^:]*):([^:]*):([^:]*):gpio(\d+)(?::(\d+)ms)?(?::(.*))?$/);
+          if (m) oldLines.push({slot:m[1], name:m[2], type:m[3], message:m[4], gpio:m[5], duration:m[6]||'', reply:m[7]||'', multiplier:'1'});
+        });
       });
+      let rows = [];
+      if (sawNew) {
+        rows = [...bySlot.values()].sort((a, b) => Number(a.slot) - Number(b.slot));
+        rows.forEach(row => {
+          row.message = joinChunks(row.messageChunks);
+          row.reply = joinChunks(row.replyChunks);
+        });
+      } else {
+        rows = oldLines;
+      }
+      triggerCache = rows;
       if (!rows.length) {
         tbody.innerHTML = '<tr><td colspan="4" class="empty">No triggers on device.</td></tr>';
         return;
       }
-      tbody.innerHTML = rows.map(r => {
-        const detail = r.type === 'output'
-          ? `GPIO${r.gpio}${r.duration ? ' · ' + r.duration + 'ms' : ''}`
-          : `GPIO${r.gpio} ADC`;
+      tbody.innerHTML = rows.map((r, i) => {
+        const detail = r.type === 'reply'
+          ? escapeHtml(r.reply || '—')
+          : (r.type === 'output'
+            ? `GPIO${r.gpio}${r.duration ? ' · ' + r.duration + 'ms' : ''}`
+            : `GPIO${r.gpio} ADC`);
         return `<tr>
           <td><code>${escapeHtml(r.message)}</code></td>
-          <td><span class="pill">${r.type}</span></td>
-          <td>${detail}</td>
-          <td style="white-space:nowrap">
-            <button onclick='editTrigger(${r.slot},${JSON.stringify(r.name)},${JSON.stringify(r.type)},${JSON.stringify(r.message)},${r.gpio},${JSON.stringify(r.duration)})'>Edit</button>
+          <td><span class="pill">${escapeHtml(r.type)}</span></td>
+          <td class="detail">${detail}</td>
+          <td class="actions">
+            <button onclick="editCached(${i})">Edit</button>
             <button class="danger" onclick="deleteSlot(${r.slot})">Delete</button>
           </td>
         </tr>`;
@@ -502,6 +757,7 @@ HTML = r"""<!doctype html>
     async function monitorConnect() {
       const btn = document.getElementById('connectBtn');
       btn.disabled = true;
+      setTriggerLoading();
       try {
         const data = await api('/api/monitor/connect', {port: currentPort()}, 90000);
         monitorConnected = true;
@@ -514,6 +770,7 @@ HTML = r"""<!doctype html>
         document.getElementById('monitorStatus').className = 'status ok';
         await listTriggers();
       } catch (err) {
+        setTriggerNote('Connect, then click Refresh list.');
         setDeviceStatus('Connect failed: ' + err.message, 'fail');
       } finally {
         btn.disabled = false;
@@ -528,6 +785,7 @@ HTML = r"""<!doctype html>
       monitorConnected = false;
       document.getElementById('connectBtn').textContent = 'Connect';
       hideDeviceNames();
+      setTriggerNote('Connect, then click Refresh list.');
       setDeviceStatus('Disconnected');
       document.getElementById('monitorStatus').textContent = 'Disconnected';
       document.getElementById('monitorStatus').className = 'status';
@@ -628,6 +886,7 @@ HTML = r"""<!doctype html>
     fillBoardSelect();
     fillGpioSelect();
     updateType();
+    updateCounts();
     document.getElementById('port').addEventListener('change', updateWriteFirmwareButton);
     document.getElementById('monitorInput').addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter') monitorSend();
@@ -677,6 +936,9 @@ def _busy_port_error(port: str | None, exc: BaseException) -> RuntimeError:
 
 
 FLASH_LOCK = threading.Lock()
+# Phone firmware drops a second USB text within 2s and answers with a routing error, not text.
+# Messages to this node are exempt after the matching firmware write; until then, wait the gap out.
+_TEXT_GAP_S = 2.05
 
 
 class _DebugTee:
@@ -703,6 +965,25 @@ class _DebugTee:
             self._buf = ""
 
 
+def _command_satisfied(command: str, replies: list[str]) -> bool:
+    prefixes: tuple[str, ...]
+    if command.startswith("!dmtrigger:list"):
+        prefixes = ("Triggers end",)
+    elif command.startswith("!dmtrigger:put|"):
+        prefixes = ("Part ok", "Set failed", "Not authorized", "Unknown !dmtrigger")
+    elif command.startswith("!dmtrigger:open|"):
+        prefixes = ("Opened", "Set failed", "Not authorized", "Unknown !dmtrigger")
+    elif command.startswith("!dmtrigger:commit|") or command.startswith("!dmtrigger:set|"):
+        prefixes = ("Trigger saved", "Set failed", "Not authorized", "Unknown !dmtrigger")
+    elif command.startswith("!dmtrigger:del|"):
+        prefixes = ("Trigger removed", "Delete failed", "Not authorized", "Unknown !dmtrigger")
+    elif command.startswith("!dmtrigger:clear"):
+        prefixes = ("Triggers cleared", "Not authorized", "Unknown !dmtrigger")
+    else:
+        return False
+    return any(reply.startswith(prefixes) for reply in replies)
+
+
 class PortSession:
     """Single shared Meshtastic serial connection; serializes commands + monitor log."""
 
@@ -716,6 +997,7 @@ class PortSession:
         self._monitor: list[str] = []
         self._monitor_lock = threading.Lock()
         self._debug_out = _DebugTee(self)
+        self._last_text_mono = 0.0
 
     def append_monitor(self, line: str) -> None:
         text = _ANSI_RE.sub("", line).rstrip("\r\n")
@@ -791,6 +1073,8 @@ class PortSession:
         interesting = (
             text.startswith("Triggers")
             or text.startswith("Trigger")
+            or text.startswith("Opened")
+            or text.startswith("Part ok")
             or text.startswith("Set failed")
             or text.startswith("Delete failed")
             or text.startswith("Unknown !dmtrigger")
@@ -911,6 +1195,12 @@ class PortSession:
         time.sleep(0.8)
         return self._iface
 
+    def _pace_text(self) -> None:
+        remain = _TEXT_GAP_S - (time.monotonic() - self._last_text_mono)
+        if remain > 0.05:
+            self.append_monitor(f"[session] waiting {remain:.1f}s so the board will accept the next text")
+            time.sleep(remain)
+
     def send_text(self, port: str | None, text: str, wait_s: float = 0.3) -> None:
         if FLASH_LOCK.locked():
             raise RuntimeError("Firmware write is in progress.")
@@ -919,24 +1209,41 @@ class PortSession:
         with self._lock:
             iface = self._ensure_open(port)
             node_num = iface.localNode.nodeNum
+            self._pace_text()
             self.append_monitor(f"[tx] to=self text={text}")
             iface.sendText(text, destinationId=node_num, wantAck=False)
+            self._last_text_mono = time.monotonic()
             time.sleep(wait_s)
 
-    def send_command(self, port: str | None, command: str, wait_s: float = 4.0) -> list[str]:
+    def send_command(self, port: str | None, command: str, wait_s: float = 8.0) -> list[str]:
         if FLASH_LOCK.locked():
             raise RuntimeError(
                 "Firmware write is in progress. Wait until it finishes before sending config commands."
             )
         with self._lock:
-            with self._reply_lock:
-                self._replies.clear()
             try:
                 iface = self._ensure_open(port)
                 node_num = iface.localNode.nodeNum
+                self._pace_text()
+                with self._reply_lock:
+                    self._replies.clear()
                 self.append_monitor(f"[tx] to=self text={command}")
                 iface.sendText(command, destinationId=node_num, wantAck=True)
-                time.sleep(wait_s)
+                self._last_text_mono = time.monotonic()
+                deadline = time.monotonic() + wait_s
+                last_count = 0
+                last_change = time.monotonic()
+                while time.monotonic() < deadline:
+                    with self._reply_lock:
+                        got = self._replies[:]
+                    if _command_satisfied(command, got):
+                        return got
+                    if len(got) != last_count:
+                        last_count = len(got)
+                        last_change = time.monotonic()
+                    elif got and time.monotonic() - last_change >= 0.6:
+                        return got
+                    time.sleep(0.05)
             except Exception as exc:
                 msg = str(exc)
                 if "exclusively lock" in msg or getattr(exc, "errno", None) == 11:

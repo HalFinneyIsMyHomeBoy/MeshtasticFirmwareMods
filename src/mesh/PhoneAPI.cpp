@@ -1888,8 +1888,10 @@ bool PhoneAPI::handleToRadioPacket(meshtastic_MeshPacket &p)
         // FIXME: Figure out why this continues to happen
         // sendNotification(meshtastic_LogRecord_Level_WARNING, p.id, "Position can only be sent once every 5 seconds");
         return false;
-    } else if (p.decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP && lastPortNumToRadio[p.decoded.portnum] &&
+    } else if (p.decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP && !isToUs(&p) &&
+               lastPortNumToRadio[p.decoded.portnum] &&
                Throttle::isWithinTimespanMs(lastPortNumToRadio[p.decoded.portnum], TWO_SECONDS_MS)) {
+        // Text addressed to this node is delivered locally and never transmitted, so it is not limited.
         LOG_WARN("Rate limit portnum %d", p.decoded.portnum);
         meshtastic_QueueStatus qs = router->getQueueStatus();
         service->sendQueueStatusToPhone(qs, 0, p.id);
@@ -1906,9 +1908,11 @@ bool PhoneAPI::handleToRadioPacket(meshtastic_MeshPacket &p)
 
     // Only the rate-limited ports above are ever read back, so recording any other portnum would let
     // a client grow this map without bound by cycling through them.
+    // A local text must not consume the outbound slot, or a config save would block a real message.
     if (IS_ONE_OF(p.decoded.portnum, meshtastic_PortNum_TRACEROUTE_APP, meshtastic_PortNum_POSITION_APP,
                   meshtastic_PortNum_WAYPOINT_APP, meshtastic_PortNum_ALERT_APP, meshtastic_PortNum_TELEMETRY_APP,
-                  meshtastic_PortNum_TEXT_MESSAGE_APP))
+                  meshtastic_PortNum_TEXT_MESSAGE_APP) &&
+        !(p.decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP && isToUs(&p)))
         lastPortNumToRadio[p.decoded.portnum] = millis();
     service->handleToRadio(p);
     return true;

@@ -11,9 +11,10 @@ class DmTriggerModule : public SinglePortModule, private concurrency::OSThread
   public:
     static constexpr uint8_t kMaxTriggers = 8;
     static constexpr uint8_t kNameLen = 20;
-    static constexpr uint8_t kMessageLen = 40;
+    // One Meshtastic text payload (233) plus a trailing NUL. Match text and reply text each use this.
+    static constexpr uint16_t kMessageLen = 234;
 
-    enum class TriggerType : uint8_t { Output = 0, AnalogReading = 1 };
+    enum class TriggerType : uint8_t { Output = 0, AnalogReading = 1, Reply = 2 };
 
     struct Trigger {
         bool enabled = false;
@@ -24,6 +25,7 @@ class DmTriggerModule : public SinglePortModule, private concurrency::OSThread
         uint8_t adcAtten = 0;
         char name[kNameLen]{};
         char message[kMessageLen]{};
+        char reply[kMessageLen]{};
     };
 
     DmTriggerModule();
@@ -61,10 +63,26 @@ class DmTriggerModule : public SinglePortModule, private concurrency::OSThread
     void handleTriggerAction(const meshtastic_MeshPacket &mp, const Trigger &trigger);
     void pulseOutput(uint8_t gpio, uint32_t durationMs);
     void replyAnalog(const meshtastic_MeshPacket &mp, const Trigger &trigger);
+    void replyWithText(const meshtastic_MeshPacket &mp, const Trigger &trigger);
     float readAnalogVolts(const Trigger &trigger) const;
-    void sendDm(const meshtastic_MeshPacket &rx, const char *text);
+    struct PendingEdit {
+        bool open = false;
+        int index = -1;
+        Trigger draft{};
+        uint16_t messageLen = 0;
+        uint16_t replyLen = 0;
+    };
+
+    PendingEdit pending{};
+
+    void sendDm(const meshtastic_MeshPacket &rx, const char *text, bool forcePhone = false);
     void sendConfigReply(const meshtastic_MeshPacket &rx, const char *text);
     bool parseSetCommand(const char *args, Trigger &out, int &indexOut) const;
+    void openEdit(const meshtastic_MeshPacket &mp, const char *args);
+    void putEdit(const meshtastic_MeshPacket &mp, const char *args);
+    void commitEdit(const meshtastic_MeshPacket &mp, const char *args);
+    void sendTriggerList(const meshtastic_MeshPacket &mp);
+    void sendFieldChunks(const meshtastic_MeshPacket &mp, uint8_t index, char kind, const char *text);
 };
 
 #endif

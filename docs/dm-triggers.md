@@ -39,8 +39,12 @@ From the command line, same venv:
 
 1. **Connect** — choose the board type, select the USB port, and connect.
 2. **Saved triggers** — refresh the list already on the device.
-3. **Add / update** — set the exact DM text, GPIO, and action (pulse pin or read voltage), then save.
+3. **Add / update** — set the exact DM text and an action: pulse a pin, read a voltage, or reply with specific text.
 4. **Test** — send that DM from the page (USB, same as a mesh DM) and watch the log.
+
+**Reply with text** sends a DM back when the incoming text matches. The reply is the text you enter, not a voltage reading. That action needs a firmware build that includes it; later edits to the phrase do not.
+
+The match phrase and the reply can each be **233 bytes**, the same limit as one Meshtastic text message. A save that long is split across several messages because the configuration command itself has to fit in one text. Raising the stored size needs one firmware write; after that, editing the words does not.
 
 ### Heltec V3 defaults
 
@@ -72,7 +76,7 @@ Same venv, no browser:
     --name "Garage" --type output --message "Open_Seseme" --gpio 7 --duration-ms 10000
 ```
 
-Commands are `!dmtrigger:` DMs to the local node (`list`, `set`, `del`, `clear`). The sender must be this node over USB, or hold a configured admin key.
+Commands are `!dmtrigger:` DMs to the local node (`list`, `del`, `clear`, and a split `open` / `put` / `commit` save). The sender must be this node over USB, or hold a configured admin key. A single `set` command still works when the whole line fits in one text message. Stock firmware accepts one USB text every 2 seconds and silently drops the next one, so a save waits that long between parts. Messages addressed to this node are exempt in this tree, because they are delivered locally and never transmitted.
 
 ## Adding another board
 

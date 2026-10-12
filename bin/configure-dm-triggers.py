@@ -10,6 +10,8 @@ Example:
       --name "Garage" --type output --message "Open_Seseme" --gpio 7 --duration-ms 10000
   ./bin/configure-dm-triggers.py --port /dev/ttyUSB0 add \
       --name "Voltage" --type analog --message "Get_Reading" --gpio 6
+  ./bin/configure-dm-triggers.py --port /dev/ttyUSB0 add \
+      --name "Greeting" --type reply --message "Hello" --reply "Hi there"
   ./bin/configure-dm-triggers.py --port /dev/ttyUSB0 del 0
   ./bin/configure-dm-triggers.py --port /dev/ttyUSB0 clear
 """
@@ -45,13 +47,51 @@ def _send_command(iface, command: str, wait_s: float = 2.0) -> None:
     print("Done. Check the device serial log or any DM reply for confirmation.")
 
 
-def _build_set_command(args, index: int) -> str:
+TEXT_BYTES = 233
+PACKET_BYTES = 200
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def _chunks(index: int, field: str, text: str) -> list[tuple[int, str]]:
+    chunks: list[tuple[int, str]] = []
+    offset = 0
+    buf = ""
+    buf_bytes = 0
+    for ch in text:
+        n = _utf8_len(ch)
+        header = f"!dmtrigger:put|{index}|{field}|{offset}|"
+        if _utf8_len(header) + buf_bytes + n > PACKET_BYTES:
+            if not buf:
+                raise SystemExit("A single character does not fit in one Meshtastic message")
+            chunks.append((offset, buf))
+            offset += buf_bytes
+            buf = ch
+            buf_bytes = n
+        else:
+            buf += ch
+            buf_bytes += n
+    if buf:
+        chunks.append((offset, buf))
+    return chunks
+
+
+def _save_commands(args, index: int) -> list[str]:
     duration_ms = args.duration_ms if args.type == "output" else 0
     multiplier = args.adc_multiplier if args.type == "analog" else 1.0
-    return (
-        f"!dmtrigger:set|{index}|{args.name}|{args.type}|{args.message}|"
-        f"{args.gpio}|{duration_ms}|{multiplier}"
+    gpio = 0 if args.type == "reply" else args.gpio
+    reply = args.reply if args.type == "reply" else ""
+    commands = [f"!dmtrigger:open|{index}|{args.name}|{args.type}|{gpio}|{duration_ms}|{multiplier}"]
+    commands.extend(
+        f"!dmtrigger:put|{index}|m|{offset}|{text}" for offset, text in _chunks(index, "m", args.message)
     )
+    commands.extend(
+        f"!dmtrigger:put|{index}|r|{offset}|{text}" for offset, text in _chunks(index, "r", reply)
+    )
+    commands.append(f"!dmtrigger:commit|{index}")
+    return commands
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -66,9 +106,10 @@ def main(argv: list[str] | None = None) -> int:
     add = sub.add_parser("add", help="Add or replace a trigger")
     add.add_argument("--index", type=int, default=-1, help="Trigger slot (default: append)")
     add.add_argument("--name", required=True)
-    add.add_argument("--type", choices=["output", "analog"], required=True)
-    add.add_argument("--message", required=True)
-    add.add_argument("--gpio", type=int, required=True)
+    add.add_argument("--type", choices=["output", "analog", "reply"], required=True)
+    add.add_argument("--message", required=True, help="Incoming DM text that must match")
+    add.add_argument("--reply", default="", help="Text to send back when type is reply")
+    add.add_argument("--gpio", type=int, default=0)
     add.add_argument("--duration-ms", type=int, default=1000)
     add.add_argument("--adc-multiplier", type=float, default=1.0)
 
@@ -87,7 +128,17 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "del":
             _send_command(iface, f"!dmtrigger:del|{args.index}", args.wait)
         elif args.cmd == "add":
-            _send_command(iface, _build_set_command(args, args.index), args.wait)
+            if args.type == "reply" and not args.reply.strip():
+                parser.error("--reply is required when --type reply")
+            if args.type != "reply" and args.gpio <= 0:
+                parser.error("--gpio is required unless --type reply")
+            if "|" in args.name:
+                parser.error("name cannot contain |")
+            if _utf8_len(args.message) > TEXT_BYTES or _utf8_len(args.reply) > TEXT_BYTES:
+                parser.error("message and reply must each be at most 233 bytes")
+            for command in _save_commands(args, args.index):
+                # The board drops a second USB text inside 2 seconds until firmware exempts local texts.
+                _send_command(iface, command, max(args.wait, 2.05))
         else:  # pragma: no cover
             parser.error(f"unknown command {args.cmd}")
     finally:

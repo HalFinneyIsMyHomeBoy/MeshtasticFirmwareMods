@@ -10,6 +10,7 @@
 #include "concurrency/LockGuard.h"
 #include "main.h"
 #include "Power.h"
+#include "mesh/generated/meshtastic/mesh.pb.h"
 #include <Arduino.h>
 #include <ctype.h>
 #include <string.h>
@@ -21,13 +22,46 @@
 namespace
 {
 constexpr uint32_t kStateMagic = 0x444D5452; // 'DMTR'
-constexpr uint8_t kStateVersion = 1;
+constexpr uint8_t kStateVersion = 3;
+constexpr size_t kLegacyMessageLen = 40; // v1/v2 on-disk message and reply size
+static_assert(DmTriggerModule::kMessageLen == meshtastic_Constants_DATA_PAYLOAD_LEN + 1,
+              "match and reply text must hold one Meshtastic payload plus NUL");
 constexpr const char *kStateFile = "/prefs/dm_triggers.bin";
 constexpr uint32_t kAnalogReplyCooldownMs = 2000;
 constexpr char kConfigPrefix[] = "!dmtrigger:";
 
 #pragma pack(push, 1)
-struct PersistedTrigger {
+struct PersistedHeader {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t count;
+    uint8_t reserved[2];
+};
+
+struct PersistedTriggerV1 {
+    uint8_t enabled;
+    uint8_t type;
+    uint8_t gpio;
+    uint8_t adcAtten;
+    uint32_t outputDurationMs;
+    float adcMultiplier;
+    char name[DmTriggerModule::kNameLen];
+    char message[kLegacyMessageLen];
+};
+
+struct PersistedTriggerV2 {
+    uint8_t enabled;
+    uint8_t type;
+    uint8_t gpio;
+    uint8_t adcAtten;
+    uint32_t outputDurationMs;
+    float adcMultiplier;
+    char name[DmTriggerModule::kNameLen];
+    char message[kLegacyMessageLen];
+    char reply[kLegacyMessageLen];
+};
+
+struct PersistedTriggerV3 {
     uint8_t enabled;
     uint8_t type;
     uint8_t gpio;
@@ -36,14 +70,7 @@ struct PersistedTrigger {
     float adcMultiplier;
     char name[DmTriggerModule::kNameLen];
     char message[DmTriggerModule::kMessageLen];
-};
-
-struct PersistedState {
-    uint32_t magic;
-    uint8_t version;
-    uint8_t count;
-    uint8_t reserved[2];
-    PersistedTrigger triggers[DmTriggerModule::kMaxTriggers];
+    char reply[DmTriggerModule::kMessageLen];
 };
 #pragma pack(pop)
 
@@ -227,7 +254,20 @@ static bool isReservedGpio(uint8_t gpio)
 
 static const char *triggerTypeName(DmTriggerModule::TriggerType type)
 {
-    return type == DmTriggerModule::TriggerType::AnalogReading ? "analog" : "output";
+    if (type == DmTriggerModule::TriggerType::AnalogReading)
+        return "analog";
+    if (type == DmTriggerModule::TriggerType::Reply)
+        return "reply";
+    return "output";
+}
+
+static DmTriggerModule::TriggerType triggerTypeFromStored(uint8_t type)
+{
+    if (type == (uint8_t)DmTriggerModule::TriggerType::AnalogReading)
+        return DmTriggerModule::TriggerType::AnalogReading;
+    if (type == (uint8_t)DmTriggerModule::TriggerType::Reply)
+        return DmTriggerModule::TriggerType::Reply;
+    return DmTriggerModule::TriggerType::Output;
 }
 
 static bool parseTriggerType(const char *text, DmTriggerModule::TriggerType &typeOut)
@@ -242,6 +282,10 @@ static bool parseTriggerType(const char *text, DmTriggerModule::TriggerType &typ
         typeOut = DmTriggerModule::TriggerType::AnalogReading;
         return true;
     }
+    if (strcasecmp(text, "reply") == 0 || strcasecmp(text, "text") == 0) {
+        typeOut = DmTriggerModule::TriggerType::Reply;
+        return true;
+    }
     return false;
 }
 
@@ -254,6 +298,75 @@ static char *trimToken(char *token)
         end--;
     *end = '\0';
     return token;
+}
+
+static const char *takeField(const char *s, char *dest, size_t destLen, bool &ok)
+{
+    ok = false;
+    if (!s || !dest || destLen == 0)
+        return nullptr;
+    const char *pipe = strchr(s, '|');
+    const size_t n = pipe ? (size_t)(pipe - s) : strlen(s);
+    if (n >= destLen)
+        return nullptr;
+    memcpy(dest, s, n);
+    dest[n] = '\0';
+    char *trimmed = trimToken(dest);
+    if (trimmed != dest)
+        memmove(dest, trimmed, strlen(trimmed) + 1);
+    ok = true;
+    return pipe ? pipe + 1 : s + strlen(s);
+}
+
+static void trimMatchField(char *text, uint16_t &len)
+{
+    size_t start = 0;
+    size_t end = len;
+    while (start < end && (text[start] == ' ' || text[start] == '\t'))
+        start++;
+    while (end > start && (text[end - 1] == '\n' || text[end - 1] == '\r' || text[end - 1] == ' ' || text[end - 1] == '\t'))
+        end--;
+    const size_t n = end - start;
+    if (start > 0 && n > 0)
+        memmove(text, text + start, n);
+    text[n] = '\0';
+    len = (uint16_t)n;
+}
+
+static size_t utf8ChunkBytes(const char *text, size_t available, size_t room)
+{
+    size_t n = 0;
+    while (n < available && n < room) {
+        const auto lead = static_cast<unsigned char>(text[n]);
+        size_t need = 1;
+        if ((lead & 0xE0) == 0xC0)
+            need = 2;
+        else if ((lead & 0xF0) == 0xE0)
+            need = 3;
+        else if ((lead & 0xF8) == 0xF0)
+            need = 4;
+        if (n + need > available || n + need > room)
+            break;
+        n += need;
+    }
+    if (n == 0 && available > 0 && room > 0)
+        n = 1;
+    return n;
+}
+
+static void fillTrigger(DmTriggerModule::Trigger &dst, uint8_t enabled, uint8_t type, uint8_t gpio, uint8_t adcAtten,
+                        uint32_t durationMs, float multiplier, const char *name, const char *message, const char *reply)
+{
+    dst = {};
+    dst.enabled = enabled != 0;
+    dst.type = triggerTypeFromStored(type);
+    dst.gpio = gpio;
+    dst.adcAtten = adcAtten;
+    dst.outputDurationMs = durationMs;
+    dst.adcMultiplier = multiplier;
+    copyStringField(dst.name, sizeof(dst.name), name);
+    copyStringField(dst.message, sizeof(dst.message), message);
+    copyStringField(dst.reply, sizeof(dst.reply), reply ? reply : "");
 }
 } // namespace
 
@@ -285,8 +398,12 @@ bool DmTriggerModule::setTrigger(uint8_t index, const Trigger &trigger)
 {
     if (index >= kMaxTriggers)
         return false;
-    if (!isGpioAllowed(trigger.gpio, trigger.type))
+    if (trigger.type == TriggerType::Reply) {
+        if (trigger.reply[0] == '\0')
+            return false;
+    } else if (!isGpioAllowed(trigger.gpio, trigger.type)) {
         return false;
+    }
     if (trigger.message[0] == '\0')
         return false;
 
@@ -313,6 +430,7 @@ bool DmTriggerModule::removeTrigger(uint8_t index)
         triggers[i] = triggers[i + 1];
     memset(&triggers[triggerCount - 1], 0, sizeof(Trigger));
     triggerCount--;
+    pending.open = false;
     return saveToDisk();
 }
 
@@ -320,6 +438,7 @@ void DmTriggerModule::clearTriggers()
 {
     memset(triggers, 0, sizeof(triggers));
     triggerCount = 0;
+    pending.open = false;
     saveToDisk();
 }
 
@@ -397,30 +516,58 @@ bool DmTriggerModule::loadFromDisk(bool &hadFile)
     }
     hadFile = true;
 
-    PersistedState state{};
-    const size_t got = file.read(reinterpret_cast<uint8_t *>(&state), sizeof(state));
-    file.close();
-    if (got != sizeof(state) || state.magic != kStateMagic || state.version != kStateVersion || state.count > kMaxTriggers) {
-        LOG_WARN("DmTrigger: invalid prefs (got=%u expect=%u magic=0x%08x ver=%u count=%u)", (unsigned)got,
-                 (unsigned)sizeof(state), state.magic, state.version, state.count);
+    PersistedHeader header{};
+    size_t got = file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header));
+    if (got != sizeof(header) || header.magic != kStateMagic || header.count > kMaxTriggers || header.version < 1 ||
+        header.version > kStateVersion) {
+        file.close();
+        LOG_WARN("DmTrigger: invalid prefs (got=%u magic=0x%08x ver=%u count=%u)", (unsigned)got, header.magic, header.version,
+                 header.count);
         return false;
     }
 
     triggerCount = 0;
     memset(triggers, 0, sizeof(triggers));
-    for (uint8_t i = 0; i < state.count; i++) {
-        const PersistedTrigger &src = state.triggers[i];
-        Trigger &dst = triggers[i];
-        dst.enabled = src.enabled != 0;
-        dst.type = (src.type == (uint8_t)TriggerType::AnalogReading) ? TriggerType::AnalogReading : TriggerType::Output;
-        dst.gpio = src.gpio;
-        dst.outputDurationMs = src.outputDurationMs;
-        dst.adcMultiplier = src.adcMultiplier;
-        dst.adcAtten = src.adcAtten;
-        copyStringField(dst.name, sizeof(dst.name), src.name);
-        copyStringField(dst.message, sizeof(dst.message), src.message);
-        triggerCount++;
+    bool shortFile = false;
+    if (header.version == 1) {
+        PersistedTriggerV1 legacy[kMaxTriggers]{};
+        got = file.read(reinterpret_cast<uint8_t *>(legacy), sizeof(legacy));
+        shortFile = got != sizeof(legacy);
+        if (!shortFile) {
+            for (uint8_t i = 0; i < header.count; i++)
+                fillTrigger(triggers[i], legacy[i].enabled, legacy[i].type, legacy[i].gpio, legacy[i].adcAtten,
+                            legacy[i].outputDurationMs, legacy[i].adcMultiplier, legacy[i].name, legacy[i].message, "");
+        }
+    } else if (header.version == 2) {
+        PersistedTriggerV2 legacy[kMaxTriggers]{};
+        got = file.read(reinterpret_cast<uint8_t *>(legacy), sizeof(legacy));
+        shortFile = got != sizeof(legacy);
+        if (!shortFile) {
+            for (uint8_t i = 0; i < header.count; i++)
+                fillTrigger(triggers[i], legacy[i].enabled, legacy[i].type, legacy[i].gpio, legacy[i].adcAtten,
+                            legacy[i].outputDurationMs, legacy[i].adcMultiplier, legacy[i].name, legacy[i].message,
+                            legacy[i].reply);
+        }
+    } else {
+        for (uint8_t i = 0; i < kMaxTriggers && !shortFile; i++) {
+            PersistedTriggerV3 one{};
+            got = file.read(reinterpret_cast<uint8_t *>(&one), sizeof(one));
+            if (got != sizeof(one)) {
+                shortFile = true;
+                break;
+            }
+            if (i < header.count)
+                fillTrigger(triggers[i], one.enabled, one.type, one.gpio, one.adcAtten, one.outputDurationMs, one.adcMultiplier,
+                            one.name, one.message, one.reply);
+        }
     }
+    file.close();
+    if (shortFile) {
+        LOG_WARN("DmTrigger: short v%u prefs", header.version);
+        memset(triggers, 0, sizeof(triggers));
+        return false;
+    }
+    triggerCount = header.count;
     LOG_INFO("DmTrigger: restored %u trigger(s) from disk", triggerCount);
     return true;
 #else
@@ -431,35 +578,38 @@ bool DmTriggerModule::loadFromDisk(bool &hadFile)
 bool DmTriggerModule::saveToDisk() const
 {
 #ifdef FSCom
-    PersistedState state{};
-    state.magic = kStateMagic;
-    state.version = kStateVersion;
-    state.count = triggerCount;
-
-    for (uint8_t i = 0; i < triggerCount; i++) {
-        const Trigger &src = triggers[i];
-        PersistedTrigger &dst = state.triggers[i];
-        dst.enabled = src.enabled ? 1 : 0;
-        dst.type = (uint8_t)src.type;
-        dst.gpio = src.gpio;
-        dst.outputDurationMs = src.outputDurationMs;
-        dst.adcMultiplier = src.adcMultiplier;
-        dst.adcAtten = src.adcAtten;
-        copyStringField(dst.name, sizeof(dst.name), src.name);
-        copyStringField(dst.message, sizeof(dst.message), src.message);
-    }
-
     {
         concurrency::LockGuard g(spiLock);
         FSCom.mkdir("/prefs");
     }
     auto file = SafeFile(kStateFile, true);
-    const size_t written = file.write(reinterpret_cast<const uint8_t *>(&state), sizeof(state));
-    const bool ok = file.close() && written == sizeof(state);
+    PersistedHeader header{};
+    header.magic = kStateMagic;
+    header.version = kStateVersion;
+    header.count = triggerCount;
+    size_t written = file.write(reinterpret_cast<const uint8_t *>(&header), sizeof(header));
+    for (uint8_t i = 0; i < kMaxTriggers; i++) {
+        PersistedTriggerV3 dst{};
+        if (i < triggerCount) {
+            const Trigger &src = triggers[i];
+            dst.enabled = src.enabled ? 1 : 0;
+            dst.type = (uint8_t)src.type;
+            dst.gpio = src.gpio;
+            dst.outputDurationMs = src.outputDurationMs;
+            dst.adcMultiplier = src.adcMultiplier;
+            dst.adcAtten = src.adcAtten;
+            copyStringField(dst.name, sizeof(dst.name), src.name);
+            copyStringField(dst.message, sizeof(dst.message), src.message);
+            copyStringField(dst.reply, sizeof(dst.reply), src.reply);
+        }
+        written += file.write(reinterpret_cast<const uint8_t *>(&dst), sizeof(dst));
+    }
+    const size_t expect = sizeof(header) + sizeof(PersistedTriggerV3) * kMaxTriggers;
+    const bool ok = file.close() && written == expect;
     if (ok)
         LOG_INFO("DmTrigger: saved %u trigger(s) to %s", triggerCount, kStateFile);
     else
-        LOG_ERROR("DmTrigger: failed to save prefs (%u of %u bytes)", (unsigned)written, (unsigned)sizeof(state));
+        LOG_ERROR("DmTrigger: failed to save prefs (%u of %u bytes)", (unsigned)written, (unsigned)expect);
     return ok;
 #else
     return false;
@@ -468,6 +618,8 @@ bool DmTriggerModule::saveToDisk() const
 
 bool DmTriggerModule::isGpioAllowed(uint8_t gpio, TriggerType type) const
 {
+    if (type == TriggerType::Reply)
+        return true;
     if (gpio == 0)
         return false;
     if (isReservedGpio(gpio))
@@ -503,7 +655,7 @@ bool DmTriggerModule::isAuthorizedConfigSender(const meshtastic_MeshPacket &mp) 
     return false;
 }
 
-void DmTriggerModule::sendDm(const meshtastic_MeshPacket &rx, const char *text)
+void DmTriggerModule::sendDm(const meshtastic_MeshPacket &rx, const char *text, bool forcePhone)
 {
     if (!text)
         return;
@@ -521,7 +673,7 @@ void DmTriggerModule::sendDm(const meshtastic_MeshPacket &rx, const char *text)
     memcpy(p->decoded.payload.bytes, text, len);
 
     // USB/phone config session — deliver locally without mesh encoding.
-    if (rx.from == 0) {
+    if (forcePhone || rx.from == 0) {
         p->to = nodeDB->getNodeNum();
         p->channel = rx.channel;
         service->sendToPhone(p);
@@ -548,12 +700,190 @@ void DmTriggerModule::sendDm(const meshtastic_MeshPacket &rx, const char *text)
 
 void DmTriggerModule::sendConfigReply(const meshtastic_MeshPacket &rx, const char *text)
 {
-    sendDm(rx, text);
+    sendDm(rx, text, isFromUs(&rx));
+}
+
+void DmTriggerModule::sendFieldChunks(const meshtastic_MeshPacket &mp, uint8_t index, char kind, const char *text)
+{
+    const size_t total = text ? strlen(text) : 0;
+    size_t offset = 0;
+    while (offset < total) {
+        char packet[kMessageLen];
+        const int headerLen = snprintf(packet, sizeof(packet), "Trigger%c|%u|%u|", kind, index, (unsigned)offset);
+        if (headerLen < 0 || (size_t)headerLen >= meshtastic_Constants_DATA_PAYLOAD_LEN)
+            return;
+        const size_t room = meshtastic_Constants_DATA_PAYLOAD_LEN - (size_t)headerLen;
+        const size_t n = utf8ChunkBytes(text + offset, total - offset, room);
+        memcpy(packet + headerLen, text + offset, n);
+        packet[headerLen + n] = '\0';
+        sendConfigReply(mp, packet);
+        delay(20);
+        offset += n;
+    }
+}
+
+void DmTriggerModule::sendTriggerList(const meshtastic_MeshPacket &mp)
+{
+    char line[96];
+    snprintf(line, sizeof(line), "Triggers (%u/%u)", triggerCount, kMaxTriggers);
+    sendConfigReply(mp, line);
+    delay(20);
+    for (uint8_t i = 0; i < triggerCount; i++) {
+        const Trigger &t = triggers[i];
+        snprintf(line, sizeof(line), "Trigger|%u|%s|%s|%u|%u|%.8g", i, t.name, triggerTypeName(t.type), t.gpio,
+                 (unsigned)t.outputDurationMs, t.adcMultiplier);
+        sendConfigReply(mp, line);
+        delay(20);
+        sendFieldChunks(mp, i, 'M', t.message);
+        sendFieldChunks(mp, i, 'R', t.reply);
+    }
+    sendConfigReply(mp, "Triggers end");
+}
+
+void DmTriggerModule::openEdit(const meshtastic_MeshPacket &mp, const char *args)
+{
+    char indexText[8];
+    char nameText[kNameLen];
+    char typeText[16];
+    char gpioText[8];
+    char durationText[12];
+    char multiplierText[24];
+    bool ok = false;
+    const char *rest = takeField(args, indexText, sizeof(indexText), ok);
+    if (ok)
+        rest = takeField(rest, nameText, sizeof(nameText), ok);
+    if (ok)
+        rest = takeField(rest, typeText, sizeof(typeText), ok);
+    if (ok)
+        rest = takeField(rest, gpioText, sizeof(gpioText), ok);
+    if (ok)
+        rest = takeField(rest, durationText, sizeof(durationText), ok);
+    if (ok)
+        rest = takeField(rest, multiplierText, sizeof(multiplierText), ok);
+    if (!ok) {
+        sendConfigReply(mp, "Set failed: bad format");
+        return;
+    }
+
+    const int index = atoi(indexText);
+    TriggerType type;
+    if (index < -1 || index >= (int)kMaxTriggers || !parseTriggerType(typeText, type)) {
+        sendConfigReply(mp, "Set failed: bad format");
+        return;
+    }
+
+    pending = {};
+    pending.open = true;
+    pending.index = index;
+    pending.draft.enabled = true;
+    pending.draft.type = type;
+    copyStringField(pending.draft.name, sizeof(pending.draft.name), nameText);
+    pending.draft.gpio = (uint8_t)atoi(gpioText);
+    pending.draft.outputDurationMs = (uint32_t)atoi(durationText);
+    pending.draft.adcMultiplier = strtof(multiplierText, nullptr);
+    pending.draft.adcAtten = ADC_ATTEN_DB_12;
+    pending.messageLen = 0;
+    pending.replyLen = 0;
+    if (type == TriggerType::Reply)
+        pending.draft.gpio = 0;
+    else if (!isGpioAllowed(pending.draft.gpio, type)) {
+        pending.open = false;
+        sendConfigReply(mp, "Set failed: gpio not allowed");
+        return;
+    }
+    sendConfigReply(mp, "Opened");
+}
+
+void DmTriggerModule::putEdit(const meshtastic_MeshPacket &mp, const char *args)
+{
+    char indexText[8];
+    char fieldText[4];
+    char offsetText[8];
+    bool ok = false;
+    const char *rest = takeField(args, indexText, sizeof(indexText), ok);
+    if (ok)
+        rest = takeField(rest, fieldText, sizeof(fieldText), ok);
+    if (ok)
+        rest = takeField(rest, offsetText, sizeof(offsetText), ok);
+    if (!ok || !rest) {
+        sendConfigReply(mp, "Set failed: bad format");
+        return;
+    }
+    if (!pending.open || atoi(indexText) != pending.index) {
+        sendConfigReply(mp, "Set failed: no edit in progress");
+        return;
+    }
+
+    const bool isMessage = strcmp(fieldText, "m") == 0;
+    const bool isReply = strcmp(fieldText, "r") == 0;
+    if (!isMessage && !isReply) {
+        sendConfigReply(mp, "Set failed: bad format");
+        return;
+    }
+
+    uint16_t &got = isMessage ? pending.messageLen : pending.replyLen;
+    char *dest = isMessage ? pending.draft.message : pending.draft.reply;
+    const unsigned offset = (unsigned)strtoul(offsetText, nullptr, 10);
+    const size_t n = strlen(rest);
+    if (n == 0) {
+        sendConfigReply(mp, "Set failed: empty part");
+        return;
+    }
+    // A retry may overlap text already stored. A gap means an earlier part was lost.
+    if (offset > got || (size_t)offset + n > meshtastic_Constants_DATA_PAYLOAD_LEN) {
+        char fail[64];
+        snprintf(fail, sizeof(fail), "Set failed: bad offset %u/%u", offset, (unsigned)got);
+        sendConfigReply(mp, fail);
+        return;
+    }
+    memcpy(dest + offset, rest, n);
+    const uint16_t end = (uint16_t)(offset + n);
+    if (end > got)
+        got = end;
+    dest[got] = '\0';
+    char okMsg[32];
+    snprintf(okMsg, sizeof(okMsg), "Part ok|%u", (unsigned)got);
+    sendConfigReply(mp, okMsg);
+}
+
+void DmTriggerModule::commitEdit(const meshtastic_MeshPacket &mp, const char *args)
+{
+    char indexText[8];
+    bool ok = false;
+    takeField(args, indexText, sizeof(indexText), ok);
+    if (!ok || !pending.open || atoi(indexText) != pending.index) {
+        sendConfigReply(mp, "Set failed: no edit in progress");
+        return;
+    }
+
+    trimMatchField(pending.draft.message, pending.messageLen);
+    if (pending.draft.message[0] == '\0') {
+        sendConfigReply(mp, "Set failed: message required");
+        return;
+    }
+    if (pending.draft.type == TriggerType::Reply && pending.draft.reply[0] == '\0') {
+        sendConfigReply(mp, "Set failed: reply text required");
+        return;
+    }
+    if (pending.draft.type != TriggerType::Reply && !isGpioAllowed(pending.draft.gpio, pending.draft.type)) {
+        sendConfigReply(mp, "Set failed: gpio not allowed");
+        return;
+    }
+    if (pending.index < 0 && triggerCount >= kMaxTriggers) {
+        sendConfigReply(mp, "Set failed: table full");
+        return;
+    }
+
+    const int index = pending.index;
+    const bool saved = index < 0 ? appendTrigger(pending.draft) : setTrigger((uint8_t)index, pending.draft);
+    pending.open = false;
+    LOG_INFO("DmTrigger: commit index=%d msgLen=%u replyLen=%u ok=%u", index, pending.messageLen, pending.replyLen, saved);
+    sendConfigReply(mp, saved ? "Trigger saved" : "Set failed");
 }
 
 bool DmTriggerModule::parseSetCommand(const char *args, Trigger &out, int &indexOut) const
 {
-    char buffer[192];
+    char buffer[320];
     if (!args || strlen(args) >= sizeof(buffer))
         return false;
     strncpy(buffer, args, sizeof(buffer) - 1);
@@ -567,6 +897,9 @@ bool DmTriggerModule::parseSetCommand(const char *args, Trigger &out, int &index
     char *gpioText = trimToken(strtok_r(nullptr, "|", &savePtr));
     char *durationText = trimToken(strtok_r(nullptr, "|", &savePtr));
     char *multiplierText = trimToken(strtok_r(nullptr, "|", &savePtr));
+    char *replyText = strtok_r(nullptr, "|", &savePtr);
+    if (replyText)
+        replyText = trimToken(replyText);
 
     if (!indexText || !nameText || !typeText || !messageText || !gpioText || !durationText)
         return false;
@@ -577,11 +910,15 @@ bool DmTriggerModule::parseSetCommand(const char *args, Trigger &out, int &index
 
     copyStringField(out.name, sizeof(out.name), nameText);
     copyStringField(out.message, sizeof(out.message), messageText);
+    if (replyText)
+        copyStringField(out.reply, sizeof(out.reply), replyText);
     out.gpio = (uint8_t)atoi(gpioText);
     out.outputDurationMs = (uint32_t)atoi(durationText);
     out.adcMultiplier = multiplierText ? strtof(multiplierText, nullptr) : 1.0f;
     out.adcAtten = ADC_ATTEN_DB_12;
     out.enabled = true;
+    if (out.type == TriggerType::Reply)
+        out.gpio = 0;
     return true;
 }
 
@@ -598,16 +935,22 @@ bool DmTriggerModule::handleConfigCommand(const meshtastic_MeshPacket &mp, const
     const char *cmd = text + sizeof(kConfigPrefix) - 1;
     LOG_INFO("DmTrigger: config cmd='%s' from=0x%08x count=%u", cmd, mp.from, triggerCount);
     if (strncmp(cmd, "list", 4) == 0) {
-        char reply[220];
-        int offset = snprintf(reply, sizeof(reply), "Triggers (%u/%u)", triggerCount, kMaxTriggers);
-        for (uint8_t i = 0; i < triggerCount; i++) {
-            const Trigger &t = triggers[i];
-            offset += snprintf(reply + offset, sizeof(reply) - offset, "\n%u:%s:%s:%s:gpio%u:%ums", i, t.name,
-                               triggerTypeName(t.type), t.message, t.gpio, (unsigned)t.outputDurationMs);
-            if (offset >= (int)sizeof(reply) - 1)
-                break;
-        }
-        sendConfigReply(mp, reply);
+        sendTriggerList(mp);
+        return true;
+    }
+
+    if (strncmp(cmd, "open|", 5) == 0) {
+        openEdit(mp, cmd + 5);
+        return true;
+    }
+
+    if (strncmp(cmd, "put|", 4) == 0) {
+        putEdit(mp, cmd + 4);
+        return true;
+    }
+
+    if (strncmp(cmd, "commit|", 7) == 0) {
+        commitEdit(mp, cmd + 7);
         return true;
     }
 
@@ -627,13 +970,18 @@ bool DmTriggerModule::handleConfigCommand(const meshtastic_MeshPacket &mp, const
     }
 
     if (strncmp(cmd, "set|", 4) == 0) {
+        pending.open = false;
         Trigger trigger{};
         int index = -1;
         if (!parseSetCommand(cmd + 4, trigger, index)) {
             sendConfigReply(mp, "Set failed: bad format");
             return true;
         }
-        if (!isGpioAllowed(trigger.gpio, trigger.type)) {
+        if (trigger.type == TriggerType::Reply && trigger.reply[0] == '\0') {
+            sendConfigReply(mp, "Set failed: reply text required");
+            return true;
+        }
+        if (trigger.type != TriggerType::Reply && !isGpioAllowed(trigger.gpio, trigger.type)) {
             sendConfigReply(mp, "Set failed: gpio not allowed");
             return true;
         }
@@ -728,11 +1076,31 @@ void DmTriggerModule::replyAnalog(const meshtastic_MeshPacket &mp, const Trigger
     lastAnalogReplyFrom[triggerIndex] = mp.from;
 }
 
+void DmTriggerModule::replyWithText(const meshtastic_MeshPacket &mp, const Trigger &trigger)
+{
+    if (trigger.reply[0] == '\0')
+        return;
+
+    const uint8_t triggerIndex = (uint8_t)(&trigger - triggers);
+    const uint32_t now = millis();
+    if (mp.from == lastAnalogReplyFrom[triggerIndex] && (now - lastAnalogReplyMs[triggerIndex]) < kAnalogReplyCooldownMs)
+        return;
+
+    LOG_INFO("DmTrigger: reply '%s' -> '%s' to 0x%08x", trigger.message, trigger.reply, mp.from);
+    sendDm(mp, trigger.reply);
+    lastAnalogReplyMs[triggerIndex] = now;
+    lastAnalogReplyFrom[triggerIndex] = mp.from;
+}
+
 void DmTriggerModule::handleTriggerAction(const meshtastic_MeshPacket &mp, const Trigger &trigger)
 {
     if (trigger.type == TriggerType::Output) {
         LOG_INFO("DmTrigger: output '%s' on GPIO %u", trigger.message, trigger.gpio);
         pulseOutput(trigger.gpio, trigger.outputDurationMs);
+        return;
+    }
+    if (trigger.type == TriggerType::Reply) {
+        replyWithText(mp, trigger);
         return;
     }
     replyAnalog(mp, trigger);
@@ -755,6 +1123,11 @@ ProcessMessage DmTriggerModule::handleReceived(const meshtastic_MeshPacket &mp)
     memcpy(text, payload.payload.bytes, len);
     text[len] = '\0';
 
+    if (strncmp(text, kConfigPrefix, sizeof(kConfigPrefix) - 1) == 0) {
+        handleConfigCommand(mp, text);
+        return ProcessMessage::CONTINUE;
+    }
+
     // Trim trailing CR/LF/spaces that some clients append to text messages.
     while (len > 0 && (text[len - 1] == '\n' || text[len - 1] == '\r' || text[len - 1] == ' '))
         text[--len] = '\0';
@@ -765,11 +1138,6 @@ ProcessMessage DmTriggerModule::handleReceived(const meshtastic_MeshPacket &mp)
     if (start > 0) {
         memmove(text, text + start, len - start + 1);
         len -= start;
-    }
-
-    if (strncmp(text, kConfigPrefix, sizeof(kConfigPrefix) - 1) == 0) {
-        handleConfigCommand(mp, text);
-        return ProcessMessage::CONTINUE;
     }
 
     LOG_INFO("DmTrigger: DM from=0x%08x text='%s' (len=%u) checking %u trigger(s)", mp.from, text, (unsigned)len, triggerCount);
