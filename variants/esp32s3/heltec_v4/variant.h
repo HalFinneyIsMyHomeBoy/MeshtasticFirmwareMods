@@ -92,7 +92,19 @@
 #define PERIPHERAL_WARMUP_MS 1000 // Make sure I2C QuickLink has stable power before continuing
 #define PIN_GPS_STANDBY (40)      // An output to wake GPS, low means allow sleep, high means force wake
 #define PIN_GPS_PPS (41)
-// Seems to be missing on this new board
-#define GPS_TX_PIN (38) // This is for bits going TOWARDS the CPU
-#define GPS_RX_PIN (39) // This is for bits going TOWARDS the GPS
+// GNSS is on the V4 expansion kit (CM121, 9600 baud by default), not on the bare board
+#define GPS_TX_PIN (38) // This is for bits going TOWARDS the GPS
+#define GPS_RX_PIN (39) // This is for bits going TOWARDS the CPU
 #define GPS_THREAD_INTERVAL 50
+
+#define HAS_DM_TRIGGER 1
+
+// Default DM triggers. GPIO 7 is VFEM_Ctrl on V4 — do not use it as a user output.
+#define GPIO_TRIGGER_PIN 6
+#define GPIO_TRIGGER_MESSAGE "Open_Seseme"
+#define GPIO_TRIGGER_MS 10000
+
+#define VOLTAGE_QUERY_MESSAGE "Get_Reading"
+#define VOLTAGE_ADC_PIN 3 // Header / external I2C SCL; 0-3.3V at the pin
+#define VOLTAGE_ADC_ATTENUATION ADC_ATTEN_DB_12
+#define VOLTAGE_ADC_MULTIPLIER 1.0f

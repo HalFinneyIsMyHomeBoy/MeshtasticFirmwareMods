@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configure Heltec V3 DM GPIO triggers over USB/BLE.
+"""Configure DM GPIO triggers over USB/BLE (Heltec V3 / V4).
 
 Sends !dmtrigger: admin commands to the local node. The sender must either be
 the node itself (self-DM) or hold a configured admin key.
@@ -27,7 +27,7 @@ def _connect(port: str | None):
     except ImportError as exc:  # pragma: no cover - runtime helper
         raise SystemExit(
             "meshtastic package required. Install into the repo venv:\n"
-            "  .venv/bin/pip install meshtastic pypubsub\n"
+            "  .venv/bin/pip install -r bin/dm-trigger-requirements.txt\n"
             "Then run with: .venv/bin/python bin/configure-dm-triggers.py ..."
         ) from exc
 

@@ -43,6 +43,8 @@
 
 #define HAS_32768HZ 1
 
+#define HAS_DM_TRIGGER 1
+
 // Default DM triggers (seeded on first boot; change at runtime via !dmtrigger: commands).
 #define GPIO_TRIGGER_PIN 7
 #define GPIO_TRIGGER_MESSAGE "Open_Seseme"

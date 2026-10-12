@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Local web configurator for Heltec V3 DM GPIO triggers.
+"""Local web configurator for DM GPIO triggers (Heltec V3 / V4).
 
 Includes a Device console (Meshtastic serial session) to send DMs / !dmtrigger:
 commands and stream replies + firmware log lines.
 
 Setup (use the repo venv — do not pip install into system Python):
 
-  .venv/bin/pip install meshtastic pypubsub
+  .venv/bin/pip install -r bin/dm-trigger-requirements.txt
 
 Run:
 
   .venv/bin/python bin/dm-trigger-web.py --port 8088
 
-Then open http://127.0.0.1:8088 and select the device serial port.
+Then open http://127.0.0.1:8088, pick the board, and select the device serial port.
 """
 
 from __future__ import annotations
@@ -36,15 +36,38 @@ from urllib.parse import parse_qs, urlparse
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-PINOUT = [
-    {"gpio": 1, "label": "GPIO1", "note": "Battery ADC; analog only", "analog": True, "output": False},
-    {"gpio": 2, "label": "GPIO2", "note": "External GPIO / ADC", "analog": True, "output": True},
-    {"gpio": 3, "label": "GPIO3", "note": "External GPIO / ADC", "analog": True, "output": True},
-    {"gpio": 4, "label": "GPIO4", "note": "External GPIO / ADC", "analog": True, "output": True},
-    {"gpio": 5, "label": "GPIO5", "note": "External GPIO / ADC", "analog": True, "output": True},
-    {"gpio": 6, "label": "GPIO6 / J3-17", "note": "Default voltage input", "analog": True, "output": True},
-    {"gpio": 7, "label": "GPIO7", "note": "Default output trigger", "analog": True, "output": True},
-]
+BOARDS = {
+    "heltec-v3": {
+        "id": "heltec-v3",
+        "label": "Heltec V3",
+        "env": "heltec-v3",
+        "default_output": 7,
+        "default_analog": 6,
+        "pinout": [
+            {"gpio": 1, "label": "GPIO1", "note": "Battery ADC; analog only", "analog": True, "output": False},
+            {"gpio": 2, "label": "GPIO2", "note": "External GPIO / ADC", "analog": True, "output": True},
+            {"gpio": 3, "label": "GPIO3", "note": "External GPIO / ADC", "analog": True, "output": True},
+            {"gpio": 4, "label": "GPIO4", "note": "External GPIO / ADC", "analog": True, "output": True},
+            {"gpio": 5, "label": "GPIO5", "note": "External GPIO / ADC", "analog": True, "output": True},
+            {"gpio": 6, "label": "GPIO6 / J3-17", "note": "Default voltage input", "analog": True, "output": True},
+            {"gpio": 7, "label": "GPIO7", "note": "Default output trigger", "analog": True, "output": True},
+        ],
+    },
+    "heltec-v4": {
+        "id": "heltec-v4",
+        "label": "Heltec V4",
+        "env": "heltec-v4",
+        "default_output": 6,
+        "default_analog": 3,
+        "pinout": [
+            {"gpio": 1, "label": "GPIO1", "note": "Battery ADC; analog only", "analog": True, "output": False},
+            {"gpio": 3, "label": "GPIO3 / I2C SCL", "note": "Default voltage input; also external I2C SCL", "analog": True, "output": True},
+            {"gpio": 4, "label": "GPIO4 / I2C SDA", "note": "Header GPIO / ADC; also external I2C SDA", "analog": True, "output": True},
+            {"gpio": 6, "label": "GPIO6 / J3-17", "note": "Default output; also ADC. Buzzer on V4 TFT — skip on TFT", "analog": True, "output": True},
+            {"gpio": 45, "label": "GPIO45", "note": "User GPIO (digital only)", "analog": False, "output": True},
+        ],
+    },
+}
 
 
 HTML = r"""<!doctype html>
@@ -87,6 +110,9 @@ HTML = r"""<!doctype html>
     details { margin-top:8px; }
     details summary { cursor:pointer; color:var(--muted); font-size:13px; padding:6px 0; }
     .hint { color:var(--muted); font-size:13px; margin-top:8px; }
+    .identity { margin-top:10px; padding:10px 12px; background:#121920; border:1px solid var(--line); border-radius:8px; }
+    .identity div + div { margin-top:4px; }
+    .identity .label { color:var(--muted); display:inline-block; width:96px; }
     .send-row { display:grid; grid-template-columns:1fr 100px; gap:8px; margin-top:10px; }
     td button { width:auto; padding:6px 10px; font-size:13px; }
     @media (max-width:560px) { .row, .row3 { grid-template-columns:1fr; } }
@@ -95,19 +121,29 @@ HTML = r"""<!doctype html>
 <body>
   <div class="wrap">
     <h1>DM Triggers</h1>
-    <p class="sub">Heltec V3 — save triggers to the device, then DM the message from another node.</p>
+    <p class="sub" id="boardHint">Save triggers to the device, then DM the message from another node.</p>
 
     <section>
       <h2>1. Connect</h2>
-      <div class="row3">
+      <div class="row">
+        <div>
+          <label for="board">Board</label>
+          <select id="board" onchange="onBoardChange()"></select>
+        </div>
         <div>
           <label for="port">USB port</label>
           <select id="port"></select>
         </div>
-        <button onclick="refreshPorts()" style="margin-top:22px">Refresh</button>
-        <button class="primary" id="connectBtn" onclick="toggleConnect()" style="margin-top:22px">Connect</button>
+      </div>
+      <div class="btn-row">
+        <button onclick="refreshPorts()">Refresh ports</button>
+        <button class="primary" id="connectBtn" onclick="toggleConnect()">Connect</button>
       </div>
       <div id="deviceStatus" class="status">Not connected</div>
+      <div id="deviceIdentity" class="identity" hidden>
+        <div><span class="label">Long name</span> <strong id="longName">—</strong></div>
+        <div><span class="label">Short name</span> <strong id="shortName">—</strong></div>
+      </div>
     </section>
 
     <section>
@@ -185,7 +221,8 @@ HTML = r"""<!doctype html>
   </div>
 
   <script>
-    const pinout = __PINOUT__;
+    const boards = __BOARDS__;
+    let pinout = boards["heltec-v3"].pinout;
     let flashBusy = false;
     let monitorCursor = 0;
     let monitorConnected = false;
@@ -206,6 +243,19 @@ HTML = r"""<!doctype html>
       const el = document.getElementById('deviceStatus');
       el.className = 'status' + (cls ? ' ' + cls : '');
       el.textContent = text;
+    }
+
+    function showDeviceNames(longName, shortName) {
+      const box = document.getElementById('deviceIdentity');
+      document.getElementById('longName').textContent = longName || '—';
+      document.getElementById('shortName').textContent = shortName || '—';
+      box.hidden = false;
+    }
+
+    function hideDeviceNames() {
+      document.getElementById('deviceIdentity').hidden = true;
+      document.getElementById('longName').textContent = '—';
+      document.getElementById('shortName').textContent = '—';
     }
 
     function updateWriteFirmwareButton() {
@@ -232,6 +282,30 @@ HTML = r"""<!doctype html>
       } finally {
         clearTimeout(timer);
       }
+    }
+
+    function currentBoard() {
+      return boards[document.getElementById('board').value] || boards['heltec-v3'];
+    }
+
+    function fillBoardSelect() {
+      const sel = document.getElementById('board');
+      sel.innerHTML = '';
+      Object.values(boards).forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b.id;
+        opt.textContent = b.label;
+        sel.appendChild(opt);
+      });
+      onBoardChange();
+    }
+
+    function onBoardChange() {
+      const board = currentBoard();
+      pinout = board.pinout;
+      document.getElementById('boardHint').textContent =
+        `${board.label} — save triggers to the device, then DM the message from another node.`;
+      fillGpioSelect();
     }
 
     function currentPort() {
@@ -268,14 +342,16 @@ HTML = r"""<!doctype html>
       sel.innerHTML = '';
       pinout.forEach(pin => {
         if (type === 'output' && !pin.output) return;
+        if (type === 'analog' && !pin.analog) return;
         const opt = document.createElement('option');
         opt.value = pin.gpio;
         opt.textContent = `${pin.label} — ${pin.note}`;
         sel.appendChild(opt);
       });
+      const board = currentBoard();
+      const fallback = String(type === 'output' ? board.default_output : board.default_analog);
       if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
-      else if (type === 'output') sel.value = '7';
-      else sel.value = '6';
+      else sel.value = fallback;
     }
 
     function updateType() {
@@ -327,6 +403,7 @@ HTML = r"""<!doctype html>
       if (!name) document.getElementById('name').value = message.slice(0, 19);
       if (!pin) throw new Error(`GPIO${gpio} is not allowed.`);
       if (type === 'output' && !pin.output) throw new Error(`GPIO${gpio} cannot be an output.`);
+      if (type === 'analog' && !pin.analog) throw new Error(`GPIO${gpio} is not ADC-capable.`);
       if (type === 'output' && duration <= 0) throw new Error('Hold time must be > 0.');
     }
 
@@ -430,7 +507,8 @@ HTML = r"""<!doctype html>
         monitorConnected = true;
         monitorCursor = data.next || 0;
         btn.textContent = 'Disconnect';
-        const who = [data.short_name, data.node_hex].filter(Boolean).join(' ');
+        showDeviceNames(data.long_name, data.short_name);
+        const who = [data.long_name, data.short_name ? `(${data.short_name})` : '', data.node_hex].filter(Boolean).join(' ');
         setDeviceStatus(who ? `Connected · ${who}` : `Connected · ${data.port || currentPort()}`, 'ok');
         document.getElementById('monitorStatus').textContent = 'Connected — watching device log';
         document.getElementById('monitorStatus').className = 'status ok';
@@ -449,6 +527,7 @@ HTML = r"""<!doctype html>
       } catch (_) {}
       monitorConnected = false;
       document.getElementById('connectBtn').textContent = 'Connect';
+      hideDeviceNames();
       setDeviceStatus('Disconnected');
       document.getElementById('monitorStatus').textContent = 'Disconnected';
       document.getElementById('monitorStatus').className = 'status';
@@ -495,7 +574,7 @@ HTML = r"""<!doctype html>
     async function writeFirmware() {
       const port = currentPort();
       if (!port || flashBusy) return;
-      if (!confirm(`Flash heltec-v3 firmware to ${port}?\\n\\nDo not unplug during the write.`)) return;
+      if (!confirm(`Flash ${currentBoard().label} firmware (${currentBoard().env}) to ${port}?\\n\\nDo not unplug during the write.`)) return;
       if (monitorConnected) await monitorDisconnect();
 
       const wrap = document.getElementById('flashConsoleWrap');
@@ -511,7 +590,7 @@ HTML = r"""<!doctype html>
       statusEl.textContent = 'Starting…';
 
       try {
-        await api('/api/flash', {port, env: 'heltec-v3'}, 15000);
+        await api('/api/flash', {port, env: currentBoard().env}, 15000);
         let cursor = 0;
         const startedAt = Date.now();
         while (true) {
@@ -546,6 +625,7 @@ HTML = r"""<!doctype html>
       }
     }
 
+    fillBoardSelect();
     fillGpioSelect();
     updateType();
     document.getElementById('port').addEventListener('change', updateWriteFirmwareButton);
@@ -760,7 +840,8 @@ class PortSession:
             except Exception as exc:
                 channel_note = f"(Could not read channels: {exc})"
             self.append_monitor(
-                f"[session] connected port={self._port} node=0x{(node or 0):08x} short={short_name or '?'}"
+                f"[session] connected port={self._port} node=0x{(node or 0):08x} "
+                f"long={long_name or '?'} short={short_name or '?'}"
             )
             return {
                 "ok": True,
@@ -784,7 +865,7 @@ class PortSession:
         except ImportError as exc:
             raise RuntimeError(
                 "Missing meshtastic/pypubsub. Install into the repo venv, then restart this server:\n"
-                "  .venv/bin/pip install meshtastic pypubsub\n"
+                "  .venv/bin/pip install -r bin/dm-trigger-requirements.txt\n"
                 "  .venv/bin/python bin/dm-trigger-web.py --port 8088"
             ) from exc
 
@@ -871,7 +952,7 @@ SESSION = PortSession()
 FIRMWARE_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _resolve_pio() -> str:
+def _find_pio() -> str | None:
     candidates = [
         shutil.which("pio"),
         str(Path.home() / ".platformio" / "penv" / "bin" / "pio"),
@@ -880,7 +961,68 @@ def _resolve_pio() -> str:
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return candidate
-    raise RuntimeError("PlatformIO `pio` not found on PATH or in ~/.platformio/penv/bin/pio")
+    return None
+
+
+def _install_pio(log) -> str:
+    """Install GUI requirements into the repo venv when pio is missing on a fresh clone."""
+    venv_python = FIRMWARE_ROOT / ".venv" / "bin" / "python"
+    requirements = FIRMWARE_ROOT / "bin" / "dm-trigger-requirements.txt"
+    if not venv_python.is_file():
+        raise RuntimeError(
+            "PlatformIO is not installed, and the repo .venv does not exist.\n"
+            "From the repo root:\n"
+            "  python3 -m venv .venv\n"
+            "  .venv/bin/pip install -r bin/dm-trigger-requirements.txt"
+        )
+    log("PlatformIO not found. Installing it into .venv (one time, needs network)…")
+    proc = subprocess.run(
+        [str(venv_python), "-m", "pip", "install", "-r", str(requirements)],
+        cwd=str(FIRMWARE_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(
+            "Could not install PlatformIO into .venv.\n"
+            f"{detail}\n"
+            "Install it yourself, then retry:\n"
+            "  .venv/bin/pip install -r bin/dm-trigger-requirements.txt"
+        )
+    found = _find_pio()
+    if not found:
+        raise RuntimeError("PlatformIO install finished, but .venv/bin/pio is still missing")
+    log(f"PlatformIO ready: {found}")
+    return found
+
+
+def _ensure_uv(log) -> None:
+    """pioarduino creates ~/.platformio/penv with uv when python3-venv is absent."""
+    uv_path = FIRMWARE_ROOT / ".venv" / "bin" / "uv"
+    if uv_path.is_file() or shutil.which("uv"):
+        return
+    venv_python = FIRMWARE_ROOT / ".venv" / "bin" / "python"
+    if not venv_python.is_file():
+        raise RuntimeError(
+            "uv is not installed, and the repo .venv does not exist.\n"
+            "  .venv/bin/pip install -r bin/dm-trigger-requirements.txt"
+        )
+    log("Installing uv so PlatformIO can create its build environment…")
+    proc = subprocess.run(
+        [str(venv_python), "-m", "pip", "install", "uv"],
+        cwd=str(FIRMWARE_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0 or not uv_path.is_file():
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(
+            "Could not install uv into .venv.\n"
+            f"{detail}\n"
+            "On Debian/Ubuntu you can instead install python3-venv, then retry:\n"
+            "  sudo apt install python3.12-venv"
+        )
 
 
 class FlashJob:
@@ -924,8 +1066,9 @@ class FlashJob:
     def start(self, port: str, env: str = "heltec-v3") -> None:
         if not port:
             raise ValueError("Serial port is required for firmware write")
-        if env != "heltec-v3":
-            raise ValueError("Only the heltec-v3 environment is supported by this configurator")
+        if env not in BOARDS:
+            allowed = ", ".join(sorted(BOARDS))
+            raise ValueError(f"Unsupported board env {env!r}. Use one of: {allowed}")
         if not Path(port).exists():
             raise RuntimeError(f"Serial port does not exist: {port}")
         if not FLASH_LOCK.acquire(blocking=False):
@@ -949,7 +1092,8 @@ class FlashJob:
             SESSION.close()
             time.sleep(0.5)
 
-            pio = _resolve_pio()
+            pio = _find_pio() or _install_pio(self._append)
+            _ensure_uv(self._append)
             jobs = str(os.cpu_count() or 2)
             cmd = [
                 pio,
@@ -1026,7 +1170,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/" or parsed.path.startswith("/index.html"):
-            body = HTML.replace("__PINOUT__", json.dumps(PINOUT)).encode("utf-8")
+            body = HTML.replace("__BOARDS__", json.dumps(BOARDS)).encode("utf-8")
             self._send(200, body, "text/html; charset=utf-8")
             return
         if parsed.path.startswith("/api/ports"):
