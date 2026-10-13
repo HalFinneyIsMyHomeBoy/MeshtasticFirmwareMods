@@ -44,6 +44,8 @@ From the command line, same venv:
 
 **Reply with text** sends a DM back when the incoming text matches. The reply is the text you enter, not a voltage reading. That action needs a firmware build that includes it; later edits to the phrase do not.
 
+A direct message that does not match any saved phrase gets the wrong-guess reply. The page default is `nah ah ah, you didn't say the magic words!` Change it under **Wrong guess reply** and click **Save reply**. That text is stored on the device (216 bytes max) and needs one firmware write before the first save. The same sender is answered at most once every 2 seconds. `!dmtrigger:` configuration commands are not guesses. With no triggers saved, a non-matching DM gets no reply.
+
 The match phrase and the reply can each be **233 bytes**, the same limit as one Meshtastic text message. A save that long is split across several messages because the configuration command itself has to fit in one text. Raising the stored size needs one firmware write; after that, editing the words does not.
 
 ### Heltec V3 defaults

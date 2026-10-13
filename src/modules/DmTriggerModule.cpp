@@ -10,6 +10,7 @@
 #include "concurrency/LockGuard.h"
 #include "main.h"
 #include "Power.h"
+#include "mesh/Throttle.h"
 #include "mesh/generated/meshtastic/mesh.pb.h"
 #include <Arduino.h>
 #include <ctype.h>
@@ -22,13 +23,16 @@
 namespace
 {
 constexpr uint32_t kStateMagic = 0x444D5452; // 'DMTR'
-constexpr uint8_t kStateVersion = 3;
+constexpr uint8_t kStateVersion = 4;
+// "!dmtrigger:miss|" plus this text must fit in one 233-byte payload.
+constexpr size_t kWrongGuessMax = 216;
 constexpr size_t kLegacyMessageLen = 40; // v1/v2 on-disk message and reply size
 static_assert(DmTriggerModule::kMessageLen == meshtastic_Constants_DATA_PAYLOAD_LEN + 1,
               "match and reply text must hold one Meshtastic payload plus NUL");
 constexpr const char *kStateFile = "/prefs/dm_triggers.bin";
 constexpr uint32_t kAnalogReplyCooldownMs = 2000;
 constexpr char kConfigPrefix[] = "!dmtrigger:";
+constexpr char kWrongGuessReply[] = "nah ah ah, you didn't say the magic words!";
 
 #pragma pack(push, 1)
 struct PersistedHeader {
@@ -372,6 +376,7 @@ static void fillTrigger(DmTriggerModule::Trigger &dst, uint8_t enabled, uint8_t 
 
 DmTriggerModule::DmTriggerModule() : SinglePortModule("DmTrigger", meshtastic_PortNum_TEXT_MESSAGE_APP), OSThread("DmTrigger")
 {
+    setWrongGuessReply(nullptr);
     bool hadFile = false;
     bool loadedOk = loadFromDisk(hadFile);
     if (triggerCount == 0 && !hadFile) {
@@ -528,6 +533,7 @@ bool DmTriggerModule::loadFromDisk(bool &hadFile)
 
     triggerCount = 0;
     memset(triggers, 0, sizeof(triggers));
+    setWrongGuessReply(nullptr);
     bool shortFile = false;
     if (header.version == 1) {
         PersistedTriggerV1 legacy[kMaxTriggers]{};
@@ -548,7 +554,7 @@ bool DmTriggerModule::loadFromDisk(bool &hadFile)
                             legacy[i].outputDurationMs, legacy[i].adcMultiplier, legacy[i].name, legacy[i].message,
                             legacy[i].reply);
         }
-    } else {
+    } else if (header.version == 3 || header.version == 4) {
         for (uint8_t i = 0; i < kMaxTriggers && !shortFile; i++) {
             PersistedTriggerV3 one{};
             got = file.read(reinterpret_cast<uint8_t *>(&one), sizeof(one));
@@ -560,11 +566,26 @@ bool DmTriggerModule::loadFromDisk(bool &hadFile)
                 fillTrigger(triggers[i], one.enabled, one.type, one.gpio, one.adcAtten, one.outputDurationMs, one.adcMultiplier,
                             one.name, one.message, one.reply);
         }
+        if (!shortFile && header.version == 4) {
+            char stored[kMessageLen]{};
+            got = file.read(reinterpret_cast<uint8_t *>(stored), sizeof(stored));
+            if (got != sizeof(stored))
+                shortFile = true;
+            else {
+                stored[sizeof(stored) - 1] = '\0';
+                setWrongGuessReply(stored);
+            }
+        }
+    } else {
+        file.close();
+        LOG_WARN("DmTrigger: unsupported prefs version %u", header.version);
+        return false;
     }
     file.close();
     if (shortFile) {
         LOG_WARN("DmTrigger: short v%u prefs", header.version);
         memset(triggers, 0, sizeof(triggers));
+        setWrongGuessReply(nullptr);
         return false;
     }
     triggerCount = header.count;
@@ -604,7 +625,10 @@ bool DmTriggerModule::saveToDisk() const
         }
         written += file.write(reinterpret_cast<const uint8_t *>(&dst), sizeof(dst));
     }
-    const size_t expect = sizeof(header) + sizeof(PersistedTriggerV3) * kMaxTriggers;
+    char storedGuess[kMessageLen]{};
+    copyStringField(storedGuess, sizeof(storedGuess), wrongGuessReply);
+    written += file.write(reinterpret_cast<const uint8_t *>(storedGuess), sizeof(storedGuess));
+    const size_t expect = sizeof(header) + sizeof(PersistedTriggerV3) * kMaxTriggers + sizeof(storedGuess);
     const bool ok = file.close() && written == expect;
     if (ok)
         LOG_INFO("DmTrigger: saved %u trigger(s) to %s", triggerCount, kStateFile);
@@ -653,6 +677,31 @@ bool DmTriggerModule::isAuthorizedConfigSender(const meshtastic_MeshPacket &mp) 
             return true;
     }
     return false;
+}
+
+void DmTriggerModule::setWrongGuessReply(const char *text)
+{
+    if (!text || text[0] == '\0') {
+        copyStringField(wrongGuessReply, sizeof(wrongGuessReply), kWrongGuessReply);
+        return;
+    }
+
+    char cleaned[kMessageLen];
+    size_t n = 0;
+    for (const char *p = text; *p && n + 1 < sizeof(cleaned); p++) {
+        char c = *p;
+        if (c == '\n' || c == '\r' || c == '\t')
+            c = ' ';
+        cleaned[n++] = c;
+    }
+    cleaned[n] = '\0';
+    while (n > 0 && cleaned[n - 1] == ' ')
+        cleaned[--n] = '\0';
+    if (cleaned[0] == '\0' || n > kWrongGuessMax) {
+        copyStringField(wrongGuessReply, sizeof(wrongGuessReply), kWrongGuessReply);
+        return;
+    }
+    copyStringField(wrongGuessReply, sizeof(wrongGuessReply), cleaned);
 }
 
 void DmTriggerModule::sendDm(const meshtastic_MeshPacket &rx, const char *text, bool forcePhone)
@@ -737,6 +786,10 @@ void DmTriggerModule::sendTriggerList(const meshtastic_MeshPacket &mp)
         sendFieldChunks(mp, i, 'M', t.message);
         sendFieldChunks(mp, i, 'R', t.reply);
     }
+    char wrongLine[kMessageLen + 8];
+    snprintf(wrongLine, sizeof(wrongLine), "Wrong|%s", wrongGuessReply[0] ? wrongGuessReply : kWrongGuessReply);
+    sendConfigReply(mp, wrongLine);
+    delay(20);
     sendConfigReply(mp, "Triggers end");
 }
 
@@ -936,6 +989,18 @@ bool DmTriggerModule::handleConfigCommand(const meshtastic_MeshPacket &mp, const
     LOG_INFO("DmTrigger: config cmd='%s' from=0x%08x count=%u", cmd, mp.from, triggerCount);
     if (strncmp(cmd, "list", 4) == 0) {
         sendTriggerList(mp);
+        return true;
+    }
+
+    if (strncmp(cmd, "miss|", 5) == 0) {
+        const char *body = cmd + 5;
+        if (body[0] == '\0' || strlen(body) > kWrongGuessMax) {
+            sendConfigReply(mp, "Set failed: wrong guess text");
+            return true;
+        }
+        setWrongGuessReply(body);
+        LOG_INFO("DmTrigger: wrong-guess reply set");
+        sendConfigReply(mp, saveToDisk() ? "Wrong guess saved" : "Set failed");
         return true;
     }
 
@@ -1142,10 +1207,12 @@ ProcessMessage DmTriggerModule::handleReceived(const meshtastic_MeshPacket &mp)
 
     LOG_INFO("DmTrigger: DM from=0x%08x text='%s' (len=%u) checking %u trigger(s)", mp.from, text, (unsigned)len, triggerCount);
 
+    bool anyEnabled = false;
     for (uint8_t i = 0; i < triggerCount; i++) {
         const Trigger &trigger = triggers[i];
         if (!trigger.enabled || trigger.message[0] == '\0')
             continue;
+        anyEnabled = true;
 
         const size_t queryLen = strlen(trigger.message);
         if (len != queryLen || strncasecmp(text, trigger.message, queryLen) != 0)
@@ -1157,11 +1224,21 @@ ProcessMessage DmTriggerModule::handleReceived(const meshtastic_MeshPacket &mp)
         return ProcessMessage::CONTINUE;
     }
 
-    if (triggerCount == 0)
+    if (!anyEnabled) {
         LOG_WARN("DmTrigger: no triggers configured — use !dmtrigger:set or the web UI (then List to verify)");
-    else
-        LOG_INFO("DmTrigger: no match for '%s'", text);
+        return ProcessMessage::CONTINUE;
+    }
 
+    if (mp.from == lastMissReplyFrom && lastMissReplyMs != 0 &&
+        Throttle::isWithinTimespanMs(lastMissReplyMs, kAnalogReplyCooldownMs)) {
+        LOG_INFO("DmTrigger: wrong guess from 0x%08x still in cooldown", mp.from);
+        return ProcessMessage::CONTINUE;
+    }
+
+    LOG_INFO("DmTrigger: no match for '%s'", text);
+    sendDm(mp, wrongGuessReply[0] ? wrongGuessReply : kWrongGuessReply);
+    lastMissReplyMs = millis();
+    lastMissReplyFrom = mp.from;
     return ProcessMessage::CONTINUE;
 }
 

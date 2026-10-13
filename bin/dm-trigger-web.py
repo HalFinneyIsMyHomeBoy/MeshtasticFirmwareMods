@@ -91,7 +91,7 @@ HTML = r"""<!doctype html>
     textarea { min-height:72px; resize:vertical; }
     label .count { float:right; }
     label .count.at-limit { color:var(--danger); font-weight:600; }
-    textarea.at-limit { border-color:var(--danger); }
+    textarea.at-limit, input.at-limit { border-color:var(--danger); }
     .field-warn { color:var(--danger); font-size:13px; margin:4px 0 0; }
     button { cursor:pointer; background:#24303c; }
     button.primary { background:var(--accent); color:#06230f; border-color:var(--accent); font-weight:700; }
@@ -158,8 +158,16 @@ HTML = r"""<!doctype html>
       </div>
       <div id="deviceStatus" class="status">Not connected</div>
       <div id="deviceIdentity" class="identity" hidden>
-        <div><span class="label">Long name</span> <strong id="longName">—</strong></div>
-        <div><span class="label">Short name</span> <strong id="shortName">—</strong></div>
+        <label for="longName">Long name <span id="longNameCount" class="count">0/24 bytes</span></label>
+        <input id="longName" data-max="24" autocomplete="off" onbeforeinput="guardLimit(event)" oninput="updateCounts()">
+        <p id="longNameWarn" class="field-warn" hidden>24 bytes is the maximum.</p>
+        <label for="shortName">Short name <span id="shortNameCount" class="count">0/4 bytes</span></label>
+        <input id="shortName" data-max="4" autocomplete="off" onbeforeinput="guardLimit(event)" oninput="updateCounts()">
+        <p id="shortNameWarn" class="field-warn" hidden>4 bytes is the maximum.</p>
+        <div class="btn-row">
+          <button class="primary" onclick="saveNames()">Save names</button>
+        </div>
+        <p class="hint">The long name is what other nodes show in the list. The short name is the 4-byte label.</p>
       </div>
     </section>
 
@@ -177,7 +185,19 @@ HTML = r"""<!doctype html>
     </section>
 
     <section>
-      <h2>3. Add / update trigger</h2>
+      <h2>3. Wrong guess reply</h2>
+      <label for="wrongGuess">Sent when the DM does not match <span id="wrongCount" class="count">0/216 bytes</span></label>
+      <textarea id="wrongGuess" rows="2" data-max="216" placeholder="nah ah ah, you didn't say the magic words!" onbeforeinput="guardLimit(event)" oninput="updateCounts()">nah ah ah, you didn't say the magic words!</textarea>
+      <p id="wrongWarn" class="field-warn" hidden>216 bytes is the maximum.</p>
+      <div class="btn-row">
+        <button class="primary" onclick="saveWrongGuess()">Save reply</button>
+        <button onclick="resetWrongGuess()">Use default</button>
+      </div>
+      <p class="hint">Write firmware once so the device stores this. After that, change the words here. The same sender still gets it at most once every 2 seconds.</p>
+    </section>
+
+    <section>
+      <h2>4. Add / update trigger</h2>
       <input type="hidden" id="index" value="-1">
       <label for="message">Direct-message text (exact match) <span id="messageCount" class="count">0/233 bytes</span></label>
       <textarea id="message" rows="3" placeholder="open7" onbeforeinput="guardLimit(event)" oninput="updateCounts()"></textarea>
@@ -222,7 +242,7 @@ HTML = r"""<!doctype html>
     </section>
 
     <section>
-      <h2>4. Test</h2>
+      <h2>5. Test</h2>
       <p class="hint" style="margin-top:0">Sends a DM to this node over USB (same as a mesh DM).</p>
       <div class="send-row">
         <input id="monitorInput" placeholder="open7" autocomplete="off">
@@ -272,15 +292,42 @@ HTML = r"""<!doctype html>
 
     function showDeviceNames(longName, shortName) {
       const box = document.getElementById('deviceIdentity');
-      document.getElementById('longName').textContent = longName || '—';
-      document.getElementById('shortName').textContent = shortName || '—';
+      document.getElementById('longName').value = longName || '';
+      document.getElementById('shortName').value = shortName || '';
       box.hidden = false;
+      updateCounts();
     }
 
     function hideDeviceNames() {
       document.getElementById('deviceIdentity').hidden = true;
-      document.getElementById('longName').textContent = '—';
-      document.getElementById('shortName').textContent = '—';
+      document.getElementById('longName').value = '';
+      document.getElementById('shortName').value = '';
+      updateCounts();
+    }
+
+    async function saveNames() {
+      const longName = document.getElementById('longName').value.trim();
+      const shortName = document.getElementById('shortName').value.trim();
+      if (!longName || !shortName) {
+        setDeviceStatus('Long name and short name are required.', 'fail');
+        return;
+      }
+      if (utf8Size(longName) > 24) {
+        setDeviceStatus('Long name is longer than 24 bytes.', 'fail');
+        return;
+      }
+      if (utf8Size(shortName) > 4) {
+        setDeviceStatus('Short name is longer than 4 bytes.', 'fail');
+        return;
+      }
+      try {
+        if (!monitorConnected) await monitorConnect();
+        const data = await api('/api/owner', {port: currentPort(), long_name: longName, short_name: shortName}, 60000);
+        showDeviceNames(data.long_name, data.short_name);
+        setDeviceStatus(`Names saved · ${data.long_name} (${data.short_name})`, 'ok');
+      } catch (err) {
+        setDeviceStatus('Name save failed: ' + err.message, 'fail');
+      }
     }
 
     function updateWriteFirmwareButton() {
@@ -391,19 +438,26 @@ HTML = r"""<!doctype html>
     }
 
     const TEXT_BYTES = 233;
+    const DEFAULT_WRONG = "nah ah ah, you didn't say the magic words!";
     let triggerCache = [];
+
+    function fieldLimit(el) {
+      const n = Number(el && el.dataset.max);
+      return n > 0 ? n : TEXT_BYTES;
+    }
 
     function utf8Size(value) {
       return new TextEncoder().encode(value).length;
     }
 
-    function clampToBytes(value) {
-      if (utf8Size(value) <= TEXT_BYTES) return value;
+    function clampToBytes(value, limit) {
+      const max = limit || TEXT_BYTES;
+      if (utf8Size(value) <= max) return value;
       let out = '';
       let used = 0;
       for (const ch of value) {
         const n = utf8Size(ch);
-        if (used + n > TEXT_BYTES) break;
+        if (used + n > max) break;
         out += ch;
         used += n;
       }
@@ -414,15 +468,16 @@ HTML = r"""<!doctype html>
       const el = document.getElementById(id);
       const count = document.getElementById(countId);
       const warn = document.getElementById(warnId);
-      const clamped = clampToBytes(el.value);
+      const max = fieldLimit(el);
+      const clamped = clampToBytes(el.value, max);
       if (clamped !== el.value) {
         const caret = el.selectionStart || 0;
         el.value = clamped;
         const pos = Math.min(caret, clamped.length);
         el.setSelectionRange(pos, pos);
       }
-      const full = utf8Size(el.value) >= TEXT_BYTES;
-      count.textContent = utf8Size(el.value) + '/' + TEXT_BYTES + ' bytes';
+      const full = utf8Size(el.value) >= max;
+      count.textContent = utf8Size(el.value) + '/' + max + ' bytes';
       count.classList.toggle('at-limit', full);
       el.classList.toggle('at-limit', full);
       warn.hidden = !full;
@@ -437,9 +492,10 @@ HTML = r"""<!doctype html>
       const prefix = el.value.slice(0, start);
       const suffix = el.value.slice(end);
       const next = prefix + event.data + suffix;
-      if (utf8Size(next) <= TEXT_BYTES) return;
+      const max = fieldLimit(el);
+      if (utf8Size(next) <= max) return;
       event.preventDefault();
-      const budget = TEXT_BYTES - utf8Size(prefix) - utf8Size(suffix);
+      const budget = max - utf8Size(prefix) - utf8Size(suffix);
       let extra = '';
       let used = 0;
       if (budget > 0) {
@@ -461,6 +517,9 @@ HTML = r"""<!doctype html>
     function updateCounts() {
       applyLimit('message', 'messageCount', 'messageWarn');
       applyLimit('reply', 'replyCount', 'replyWarn');
+      applyLimit('wrongGuess', 'wrongCount', 'wrongWarn');
+      applyLimit('longName', 'longNameCount', 'longNameWarn');
+      applyLimit('shortName', 'shortNameCount', 'shortNameWarn');
     }
 
     function resetForm() {
@@ -591,6 +650,29 @@ HTML = r"""<!doctype html>
       return replies;
     }
 
+    async function saveWrongGuess() {
+      try {
+        if (!monitorConnected) await monitorConnect();
+        const el = document.getElementById('wrongGuess');
+        let text = el.value.replace(/[\r\n]+/g, ' ').trim();
+        if (!text) text = DEFAULT_WRONG;
+        el.value = text;
+        updateCounts();
+        if (utf8Size(text) > fieldLimit(el)) throw new Error('Wrong guess reply is longer than 216 bytes.');
+        const replies = await expectOk(`!dmtrigger:miss|${text}`);
+        if (!replies.includes('Wrong guess saved')) throw new Error(replies.trim() || 'Save rejected by device');
+        setDeviceStatus('Wrong guess reply saved', 'ok');
+      } catch (err) {
+        setDeviceStatus('Wrong guess reply failed: ' + err.message, 'fail');
+      }
+    }
+
+    function resetWrongGuess() {
+      document.getElementById('wrongGuess').value = DEFAULT_WRONG;
+      updateCounts();
+      saveWrongGuess();
+    }
+
     async function saveTrigger() {
       try {
         if (!monitorConnected) await monitorConnect();
@@ -684,6 +766,12 @@ HTML = r"""<!doctype html>
       const oldLines = [];
       let sawNew = false;
       packets.forEach(packet => {
+        const line = String(packet);
+        if (line.startsWith('Wrong|')) {
+          document.getElementById('wrongGuess').value = line.slice('Wrong|'.length);
+          updateCounts();
+          return;
+        }
         const messageChunk = parseChunk(packet, 'TriggerM|');
         const replyChunk = parseChunk(packet, 'TriggerR|');
         if (messageChunk || replyChunk) {
@@ -975,6 +1063,8 @@ def _command_satisfied(command: str, replies: list[str]) -> bool:
         prefixes = ("Opened", "Set failed", "Not authorized", "Unknown !dmtrigger")
     elif command.startswith("!dmtrigger:commit|") or command.startswith("!dmtrigger:set|"):
         prefixes = ("Trigger saved", "Set failed", "Not authorized", "Unknown !dmtrigger")
+    elif command.startswith("!dmtrigger:miss|"):
+        prefixes = ("Wrong guess saved", "Set failed", "Not authorized", "Unknown !dmtrigger")
     elif command.startswith("!dmtrigger:del|"):
         prefixes = ("Trigger removed", "Delete failed", "Not authorized", "Unknown !dmtrigger")
     elif command.startswith("!dmtrigger:clear"):
@@ -1072,6 +1162,7 @@ class PortSession:
         self.append_monitor(f"[rx] from={frm} to={to} text={text}")
         interesting = (
             text.startswith("Triggers")
+            or text.startswith("Wrong")
             or text.startswith("Trigger")
             or text.startswith("Opened")
             or text.startswith("Part ok")
@@ -1137,6 +1228,30 @@ class PortSession:
                 "channel_note": channel_note,
                 "next": len(self._monitor),
             }
+
+    def set_owner(self, port: str | None, long_name: str, short_name: str) -> dict[str, Any]:
+        long_name = long_name.strip()
+        short_name = short_name.strip()
+        if not long_name or not short_name:
+            raise ValueError("Long name and short name are required")
+        if len(long_name.encode("utf-8")) > 24:
+            raise ValueError("Long name is longer than 24 bytes")
+        if len(short_name.encode("utf-8")) > 4:
+            raise ValueError("Short name is longer than 4 bytes")
+        if FLASH_LOCK.locked():
+            raise RuntimeError("Firmware write is in progress — wait until it finishes.")
+        with self._lock:
+            iface = self._ensure_open(port)
+            licensed = False
+            try:
+                info = iface.getMyNodeInfo() or {}
+                user = info.get("user") or {}
+                licensed = bool(user.get("isLicensed") or user.get("is_licensed"))
+            except Exception:
+                licensed = False
+            iface.localNode.setOwner(long_name, short_name, is_licensed=licensed)
+            self.append_monitor(f"[owner] long={long_name} short={short_name}")
+            return {"ok": True, "long_name": long_name, "short_name": short_name}
 
     def disconnect(self) -> dict[str, Any]:
         self.close()
@@ -1524,6 +1639,19 @@ class Handler(BaseHTTPRequestHandler):
                 if port is not None:
                     port = str(port)
                 self._send_json(SESSION.connect(port))
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if self.path == "/api/owner":
+            try:
+                payload = self._read_json()
+                port = payload.get("port")
+                if port is not None:
+                    port = str(port)
+                self._send_json(
+                    SESSION.set_owner(port, str(payload.get("long_name") or ""), str(payload.get("short_name") or ""))
+                )
             except Exception as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
             return

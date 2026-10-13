@@ -52,6 +52,9 @@ class DmTriggerModule : public SinglePortModule, private concurrency::OSThread
     ActiveOutput activeOutputs[kMaxTriggers]{};
     uint32_t lastAnalogReplyMs[kMaxTriggers]{};
     uint32_t lastAnalogReplyFrom[kMaxTriggers]{};
+    uint32_t lastMissReplyMs = 0;
+    uint32_t lastMissReplyFrom = 0;
+    char wrongGuessReply[kMessageLen]{};
 
     void installDefaultTriggers();
     bool loadFromDisk(bool &hadFile);
@@ -75,6 +78,7 @@ class DmTriggerModule : public SinglePortModule, private concurrency::OSThread
 
     PendingEdit pending{};
 
+    void setWrongGuessReply(const char *text);
     void sendDm(const meshtastic_MeshPacket &rx, const char *text, bool forcePhone = false);
     void sendConfigReply(const meshtastic_MeshPacket &rx, const char *text);
     bool parseSetCommand(const char *args, Trigger &out, int &indexOut) const;
